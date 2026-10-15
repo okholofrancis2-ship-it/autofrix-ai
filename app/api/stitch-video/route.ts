@@ -58,6 +58,7 @@ function generateAssSubtitleFile(shots: Shot[], filePath: string, width: number,
   const marginV = height === 1080 ? 150 : 520;
   const primaryColor = getAssColorHex(captionColor);
 
+  // Using 'DejaVu Sans' for guaranteed Linux/Vercel serverless compatibility
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${width}
@@ -66,7 +67,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralStyle,Arial,${fontSize},${primaryColor},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,${marginV},1
+Style: ViralStyle,DejaVu Sans,${fontSize},${primaryColor},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -212,11 +213,11 @@ export async function POST(req: Request) {
     let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
 
     if (audioPath && bgmPath) {
-      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]subtitles='${escapedAssPath}'[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k "${outputPath}"`;
     } else if (audioPath) {
-      ffmpegCmd += ` -i "${audioPath}" -vf "subtitles='${escapedAssPath}'" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k -shortest "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k -shortest "${outputPath}"`;
     } else {
-      ffmpegCmd += ` -vf "subtitles='${escapedAssPath}'" -c:v libx264 -crf 26 -b:v 2M -preset fast "${outputPath}"`;
+      ffmpegCmd += ` -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset fast "${outputPath}"`;
     }
 
     await execPromise(ffmpegCmd);
