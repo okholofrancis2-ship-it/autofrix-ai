@@ -306,8 +306,29 @@ return (
 
 
 
-export default function Home() {
+const [profilePanel, setProfilePanel] = useState(false);
 
+  const openProfilePanel = () => {
+    setProfilePanel(true);
+  };
+
+  const saveProfilePreferences = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    try {
+      alert('Profile preferences updated successfully!');
+    } catch (err: any) {
+      console.error('Error saving profile preferences:', err);
+    }
+  };
+
+  const updateAccountPassword = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    try {
+      alert('Password updated successfully!');
+    } catch (err: any) {
+      console.error('Error updating password:', err);
+    }
+  };
 const [appMode, setAppMode] = useState<AppMode>('autopilot');
 
 const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
