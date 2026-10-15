@@ -5,14 +5,9 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import ffmpegStatic from 'ffmpeg-static';
-import { createClient } from '@supabase/supabase-js';
 
 const execPromise = promisify(exec);
 const ffmpegPath = ffmpegStatic || 'ffmpeg';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 interface Shot {
   shotNumber: number;
@@ -38,6 +33,7 @@ function formatAssTime(seconds: number): string {
   return `${h}:${pad(m)}:${pad(s)}.${pad(cs)}`;
 }
 
+// Map user color selection to ASS hex color codes (&HBBGGRR&)
 function getAssColorHex(colorName: string): string {
   switch (colorName) {
     case 'yellow': return '&H0000FFFF';
@@ -108,7 +104,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 }
 
 export async function POST(req: Request) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autofrix-stitch-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'olodo-stitch-'));
 
   try {
     const { shots, audioUrl, bgmTrack, aspectRatio, captionColor } = await req.json();
@@ -155,10 +151,11 @@ export async function POST(req: Request) {
                 `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
               );
             }
+
             downloadedClips.push(normPath);
             continue;
           }
-        } catch {}
+        } catch (err) {}
       }
 
       await execPromise(
@@ -183,7 +180,7 @@ export async function POST(req: Request) {
     let bgmPath = '';
     const selectedMood = bgmTrack && BGM_LIBRARY[bgmTrack] ? bgmTrack : 'cinematic';
     const bgmUrl = BGM_LIBRARY[selectedMood];
-
+   
     try {
       const bgmRes = await fetch(bgmUrl);
       if (bgmRes.ok) {
@@ -191,7 +188,7 @@ export async function POST(req: Request) {
         const bgmBuffer = await bgmRes.arrayBuffer();
         fs.writeFileSync(bgmPath, Buffer.from(bgmBuffer));
       }
-    } catch {}
+    } catch (err) {}
 
     const listPath = path.join(tmpDir, 'files.txt');
     const fileListContent = downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n');
@@ -200,8 +197,13 @@ export async function POST(req: Request) {
     const assPath = path.join(tmpDir, 'subtitles.ass');
     generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor);
 
+    const publicDir = path.join(process.cwd(), 'public', 'exports');
+    if (!fs.existsSync(publicDir)) {
+      fs.mkdirSync(publicDir, { recursive: true });
+    }
+
     const outputFileName = `video_${Date.now()}.mp4`;
-    const outputPath = path.join(tmpDir, outputFileName);
+    const outputPath = path.join(publicDir, outputFileName);
     const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
     let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
@@ -216,23 +218,9 @@ export async function POST(req: Request) {
 
     await execPromise(ffmpegCmd);
 
-    // Upload compiled MP4 to Supabase Storage bucket ('videos')
-    const fileBuffer = fs.readFileSync(outputPath);
-    const storagePath = `public/${outputFileName}`;
-    const { error: uploadError } = await supabase.storage
-      .from('videos')
-      .upload(storagePath, fileBuffer, { contentType: 'video/mp4', upsert: true });
-
-    if (uploadError) {
-      throw new Error(`Failed to upload compiled video to Supabase Storage: ${uploadError.message}`);
-    }
-
-    const { data: publicData } = supabase.storage.from('videos').getPublicUrl(storagePath);
-    const publicUrl = publicData.publicUrl;
-
     fs.rmSync(tmpDir, { recursive: true, force: true });
 
-    return NextResponse.json({ url: publicUrl });
+    return NextResponse.json({ url: `/exports/${outputFileName}` });
   } catch (error: any) {
     console.error('Stitch Video Error:', error);
     if (fs.existsSync(tmpDir)) {

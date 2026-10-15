@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['@ffmpeg-installer/ffmpeg', '@ffprobe-installer/ffprobe', 'fluent-ffmpeg'],
+  serverExternalPackages: ['ffmpeg-static'],
   allowedDevOrigins: ["127.0.0.1", "localhost:3000", "127.0.0.1:3000"],
 };
 
