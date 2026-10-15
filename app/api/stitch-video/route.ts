@@ -4,8 +4,15 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import ffmpegStatic from 'ffmpeg-static';
+import { createClient } from '@supabase/supabase-js';
 
 const execPromise = promisify(exec);
+const ffmpegPath = ffmpegStatic || 'ffmpeg';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 interface Shot {
   shotNumber: number;
@@ -101,10 +108,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 }
 
 export async function POST(req: Request) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'olodo-stitch-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autofrix-stitch-'));
 
   try {
-    let { shots, audioUrl, bgmTrack, aspectRatio, captionColor } = await req.json();
+    const { shots, audioUrl, bgmTrack, aspectRatio, captionColor } = await req.json();
 
     if (!shots || !Array.isArray(shots) || shots.length === 0) {
       return NextResponse.json({ error: 'No shots provided for stitching.' }, { status: 400 });
@@ -121,38 +128,8 @@ export async function POST(req: Request) {
       targetHeight = 1080;
     }
 
-    // 1. Download Voiceover Audio MP3 first so we can check its exact duration
-    let audioPath = '';
-    let totalAudioDuration = 0;
-    if (audioUrl) {
-      audioPath = path.join(tmpDir, 'voiceover.mp3');
-      if (audioUrl.startsWith('data:audio')) {
-        const base64Data = audioUrl.split(',')[1];
-        fs.writeFileSync(audioPath, Buffer.from(base64Data, 'base64'));
-      } else {
-        const res = await fetch(audioUrl);
-        const buffer = await res.arrayBuffer();
-        fs.writeFileSync(audioPath, Buffer.from(buffer));
-      }
-
-      // Probing exact audio duration using ffprobe
-      try {
-        const { stdout } = await execPromise(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`);
-        totalAudioDuration = parseFloat(stdout.trim());
-      } catch (err) {
-        console.log('Audio duration probe skipped, using fallback shot durations.');
-      }
-    }
-
-    // 2. Synchronize shot durations perfectly with the voiceover length
-    if (totalAudioDuration > 2 && shots.length > 0) {
-      const durationPerShot = totalAudioDuration / shots.length;
-      shots = shots.map((s: Shot) => ({ ...s, durationSeconds: durationPerShot }));
-    }
-
     const downloadedClips: string[] = [];
 
-    // 3. Process media files with synchronized durations
     for (let i = 0; i < shots.length; i++) {
       const shot = shots[i];
       const mediaUrl = shot.videoUrl || shot.imageUrl;
@@ -169,57 +146,68 @@ export async function POST(req: Request) {
 
             if (shot.videoUrl) {
               await execPromise(
-                `ffmpeg -y -i "${clipPath}" -t ${duration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
+                `"${ffmpegPath}" -y -i "${clipPath}" -t ${duration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
               );
             } else {
               const totalFrames = duration * 30;
               const sourceCanvasSize = Math.max(targetWidth, targetHeight) * 2;
               await execPromise(
-                `ffmpeg -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+                `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
               );
             }
             downloadedClips.push(normPath);
             continue;
           }
-        } catch (err) {}
+        } catch {}
       }
 
       await execPromise(
-        `ffmpeg -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
       );
       downloadedClips.push(normPath);
     }
 
-    // 4. Download Background Music Engine
+    let audioPath = '';
+    if (audioUrl) {
+      audioPath = path.join(tmpDir, 'voiceover.mp3');
+      if (audioUrl.startsWith('data:audio')) {
+        const base64Data = audioUrl.split(',')[1];
+        fs.writeFileSync(audioPath, Buffer.from(base64Data, 'base64'));
+      } else {
+        const res = await fetch(audioUrl);
+        const buffer = await res.arrayBuffer();
+        fs.writeFileSync(audioPath, Buffer.from(buffer));
+      }
+    }
+
     let bgmPath = '';
     const selectedMood = bgmTrack && BGM_LIBRARY[bgmTrack] ? bgmTrack : 'cinematic';
+    const bgmUrl = BGM_LIBRARY[selectedMood];
+
     try {
-      const bgmRes = await fetch(BGM_LIBRARY[selectedMood]);
+      const bgmRes = await fetch(bgmUrl);
       if (bgmRes.ok) {
         bgmPath = path.join(tmpDir, 'bgm.mp3');
-        fs.writeFileSync(bgmPath, Buffer.from(await bgmRes.arrayBuffer()));
+        const bgmBuffer = await bgmRes.arrayBuffer();
+        fs.writeFileSync(bgmPath, Buffer.from(bgmBuffer));
       }
-    } catch (err) {}
+    } catch {}
 
     const listPath = path.join(tmpDir, 'files.txt');
-    fs.writeFileSync(listPath, downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+    const fileListContent = downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n');
+    fs.writeFileSync(listPath, fileListContent, 'utf8');
 
-    // 5. Generate Synchronized Subtitles using exact matched shot durations
     const assPath = path.join(tmpDir, 'subtitles.ass');
-    generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor || 'yellow');
-
-    const publicDir = path.join(process.cwd(), 'public', 'exports');
-    if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+    generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor);
 
     const outputFileName = `video_${Date.now()}.mp4`;
-    const outputPath = path.join(publicDir, outputFileName);
+    const outputPath = path.join(tmpDir, outputFileName);
     const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
-    // 6. Stitch with -shortest to perfectly match audio end time
-    let ffmpegCmd = `ffmpeg -y -f concat -safe 0 -i "${listPath}"`;
+    let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
 
     if (audioPath && bgmPath) {
-      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]subtitles='${escapedAssPath}'[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -preset fast -c:a aac -shortest "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]subtitles='${escapedAssPath}'[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -preset fast -c:a aac "${outputPath}"`;
     } else if (audioPath) {
       ffmpegCmd += ` -i "${audioPath}" -vf "subtitles='${escapedAssPath}'" -c:v libx264 -preset fast -c:a aac -shortest "${outputPath}"`;
     } else {
@@ -227,12 +215,32 @@ export async function POST(req: Request) {
     }
 
     await execPromise(ffmpegCmd);
+
+    // Upload compiled MP4 to Supabase Storage bucket ('videos')
+    const fileBuffer = fs.readFileSync(outputPath);
+    const storagePath = `public/${outputFileName}`;
+    const { error: uploadError } = await supabase.storage
+      .from('videos')
+      .upload(storagePath, fileBuffer, { contentType: 'video/mp4', upsert: true });
+
+    if (uploadError) {
+      throw new Error(`Failed to upload compiled video to Supabase Storage: ${uploadError.message}`);
+    }
+
+    const { data: publicData } = supabase.storage.from('videos').getPublicUrl(storagePath);
+    const publicUrl = publicData.publicUrl;
+
     fs.rmSync(tmpDir, { recursive: true, force: true });
 
-    return NextResponse.json({ url: `/exports/${outputFileName}` });
+    return NextResponse.json({ url: publicUrl });
   } catch (error: any) {
     console.error('Stitch Video Error:', error);
-    if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
-    return NextResponse.json({ error: error?.message || 'Failed to compile final video.' }, { status: 500 });
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+    return NextResponse.json(
+      { error: error?.message || 'Failed to compile final video.' },
+      { status: 500 }
+    );
   }
 }
