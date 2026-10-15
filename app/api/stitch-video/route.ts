@@ -5,9 +5,18 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import ffmpegStatic from 'ffmpeg-static';
+import { createClient } from '@supabase/supabase-js';
+
+export const runtime = 'nodejs';
+export const maxDuration = 300;
 
 const execPromise = promisify(exec);
 const ffmpegPath = ffmpegStatic || 'ffmpeg';
+
+// Initialize Supabase client for server-side upload
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 interface Shot {
   shotNumber: number;
@@ -33,7 +42,6 @@ function formatAssTime(seconds: number): string {
   return `${h}:${pad(m)}:${pad(s)}.${pad(cs)}`;
 }
 
-// Map user color selection to ASS hex color codes (&HBBGGRR&)
 function getAssColorHex(colorName: string): string {
   switch (colorName) {
     case 'yellow': return '&H0000FFFF';
@@ -104,7 +112,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 }
 
 export async function POST(req: Request) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'olodo-stitch-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autofrix-stitch-'));
 
   try {
     const { shots, audioUrl, bgmTrack, aspectRatio, captionColor } = await req.json();
@@ -197,30 +205,42 @@ export async function POST(req: Request) {
     const assPath = path.join(tmpDir, 'subtitles.ass');
     generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor);
 
-    const publicDir = path.join(process.cwd(), 'public', 'exports');
-    if (!fs.existsSync(publicDir)) {
-      fs.mkdirSync(publicDir, { recursive: true });
-    }
-
     const outputFileName = `video_${Date.now()}.mp4`;
-    const outputPath = path.join(publicDir, outputFileName);
+    const outputPath = path.join(tmpDir, outputFileName);
     const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
     let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
 
     if (audioPath && bgmPath) {
-      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]subtitles='${escapedAssPath}'[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -preset fast -c:a aac "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]subtitles='${escapedAssPath}'[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k "${outputPath}"`;
     } else if (audioPath) {
-      ffmpegCmd += ` -i "${audioPath}" -vf "subtitles='${escapedAssPath}'" -c:v libx264 -preset fast -c:a aac -shortest "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioPath}" -vf "subtitles='${escapedAssPath}'" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k -shortest "${outputPath}"`;
     } else {
-      ffmpegCmd += ` -vf "subtitles='${escapedAssPath}'" -c:v libx264 -preset fast "${outputPath}"`;
+      ffmpegCmd += ` -vf "subtitles='${escapedAssPath}'" -c:v libx264 -crf 26 -b:v 2M -preset fast "${outputPath}"`;
     }
 
     await execPromise(ffmpegCmd);
 
+    // Read the compiled video from tmp and upload to Supabase Storage bucket 'videos'
+    const videoBuffer = fs.readFileSync(outputPath);
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('videos')
+      .upload(outputFileName, videoBuffer, {
+        contentType: 'video/mp4',
+        upsert: true,
+      });
+
+    if (uploadError) {
+      throw new Error(`Supabase upload failed: ${uploadError.message}`);
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from('videos')
+      .getPublicUrl(outputFileName);
+
     fs.rmSync(tmpDir, { recursive: true, force: true });
 
-    return NextResponse.json({ url: `/exports/${outputFileName}` });
+    return NextResponse.json({ url: publicUrlData.publicUrl });
   } catch (error: any) {
     console.error('Stitch Video Error:', error);
     if (fs.existsSync(tmpDir)) {
