@@ -62,7 +62,11 @@ export default function Home() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [isAuthModeSignup, setIsAuthModeSignup] = useState(false);
+  const [isAuthModeForgot, setIsAuthModeForgot] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+
+  // Profile Modal State
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   // Full Parameters State
   const [seriesName, setSeriesName] = useState('');
@@ -139,6 +143,7 @@ export default function Home() {
         const { error: signUpErr } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
         if (signUpErr) throw signUpErr;
         alert('Account created! You can now log in.');
+        setIsAuthModeSignup(false);
       } else {
         const { error: signInErr } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
         if (signInErr) throw signInErr;
@@ -150,18 +155,38 @@ export default function Home() {
     }
   };
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail) {
+      setError('Please enter your email address first.');
+      return;
+    }
+    setAuthLoading(true);
+    setError('');
+    try {
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(authEmail, {
+        redirectTo: `${window.location.origin}/`,
+      });
+      if (resetErr) throw resetErr;
+      alert('Password reset link sent! Check your inbox.');
+      setIsAuthModeForgot(false);
+    } catch (err: any) {
+      setError(err.message || 'Failed to send password reset email.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setIsProfileOpen(false);
   };
 
   const fetchUserData = async () => {
     try {
       setIsLoadingHistory(true);
-
-      const { data: socialData } = await supabase
-        .from('social_connections')
-        .select('*');
+      const { data: socialData } = await supabase.from('social_connections').select('*');
       if (socialData) setSocialAccounts(socialData);
 
       if (!user) return;
@@ -180,7 +205,6 @@ export default function Home() {
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
       if (seriesData) setSeriesList(seriesData);
-
     } catch (err) {
       console.error(err);
     } finally {
@@ -494,40 +518,81 @@ export default function Home() {
     </svg>
   );
 
+  // Unauthenticated View
   if (!user) {
     return (
-      <main className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-4 font-sans">
-        <div className="max-w-md w-full bg-white border border-slate-200 rounded-3xl p-8 space-y-6 shadow-xl">
+      <main className="min-h-screen bg-slate-50 text-slate-900 flex flex-col items-center justify-between p-4 font-sans antialiased">
+        <div className="w-full max-w-md my-auto bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xl">
           <div className="text-center space-y-2">
             <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Autofrix AI</h1>
-            <p className="text-slate-500 text-sm">Sign in to access your cinematic automation dashboard</p>
+            <p className="text-slate-500 text-sm">
+              {isAuthModeForgot ? 'Reset your account password' : 'Sign in to access your cinematic automation dashboard'}
+            </p>
           </div>
+
           {error && <div className="bg-red-50 border border-red-200 text-red-600 p-3 rounded-xl text-xs">{error}</div>}
-          <form method="POST" onSubmit={handleAuth} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Email</label>
-              <input type="email" required value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+
+          {isAuthModeForgot ? (
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Email Address</label>
+                <input type="email" required value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="your@email.com" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" />
+              </div>
+              <button type="submit" disabled={authLoading} className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl transition shadow-md h-12">
+                {authLoading ? 'Sending...' : 'Send Reset Link'}
+              </button>
+              <div className="text-center pt-2">
+                <button type="button" onClick={() => setIsAuthModeForgot(false)} className="text-xs text-purple-600 hover:text-purple-700 font-medium">
+                  Back to Sign In
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleAuth} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Email</label>
+                <input type="email" required value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="your@email.com" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" />
+              </div>
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider">Password</label>
+                  {!isAuthModeSignup && (
+                    <button type="button" onClick={() => setIsAuthModeForgot(true)} className="text-xs text-purple-600 hover:underline font-medium">
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
+                <input type="password" required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="••••••••" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" />
+              </div>
+              <button type="submit" disabled={authLoading} className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl transition shadow-md h-12">
+                {authLoading ? 'Loading...' : isAuthModeSignup ? 'Create Account' : 'Sign In'}
+              </button>
+            </form>
+          )}
+
+          {!isAuthModeForgot && (
+            <div className="text-center pt-2 border-t border-slate-100">
+              <button type="button" onClick={() => setIsAuthModeSignup(!isAuthModeSignup)} className="text-xs text-purple-600 hover:text-purple-700 font-medium py-2">
+                {isAuthModeSignup ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+              </button>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Password</label>
-              <input type="password" required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" />
-            </div>
-            <button type="submit" disabled={authLoading} className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl transition shadow-md">
-              {authLoading ? 'Loading...' : isAuthModeSignup ? 'Create Account' : 'Sign In'}
-            </button>
-          </form>
-          <div className="text-center pt-2 border-t border-slate-100">
-            <button type="button" onClick={() => setIsAuthModeSignup(!isAuthModeSignup)} className="text-xs text-purple-600 hover:text-purple-700 font-medium">
-              {isAuthModeSignup ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
-            </button>
-          </div>
+          )}
         </div>
+
+        <footer className="w-full py-4 text-center text-xs text-slate-500">
+          <p>
+            By continuing, you agree to our{' '}
+            <a href="#privacy" onClick={(e) => { e.preventDefault(); alert('Privacy Policy: Autofrix AI stores your encrypted automation presets and scheduled workflows securely.'); }} className="text-purple-600 hover:underline">Privacy Policy</a> &{' '}
+            <a href="#terms" onClick={(e) => { e.preventDefault(); alert('Terms of Service: Use responsibly for automated cinematic video creation.'); }} className="text-purple-600 hover:underline">Terms of Service</a>.
+          </p>
+        </footer>
       </main>
     );
   }
 
+  // Authenticated Dashboard View
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 lg:p-10 font-sans">
+    <main className="min-h-screen bg-slate-50 text-slate-900 p-4 sm:p-6 md:p-8 lg:p-10 font-sans antialiased pb-12">
       <div className="max-w-[1500px] w-full mx-auto space-y-8">
        
         {/* Header & Mode Tabs */}
@@ -538,22 +603,28 @@ export default function Home() {
               <p className="text-slate-500 text-sm mt-1">Automated cinematic scriptwriting, voiceover synthesis, and video pipeline</p>
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-600 font-mono bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-sm">👤 {user.email}</span>
-              <button onClick={handleLogout} className="px-3 py-1.5 bg-red-50 text-red-600 border border-red-200 text-xs font-semibold rounded-xl hover:bg-red-100 transition">Sign Out</button>
+              <button 
+                onClick={() => setIsProfileOpen(true)}
+                className="flex items-center gap-2 text-xs text-slate-700 font-mono bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm hover:bg-slate-50 transition"
+              >
+                <span>👤</span>
+                <span className="truncate max-w-[180px] sm:max-w-xs">{user.email}</span>
+              </button>
+              <button onClick={handleLogout} className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 text-xs font-semibold rounded-xl hover:bg-red-100 transition">Sign Out</button>
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-2 bg-white border border-slate-200 rounded-2xl p-2 shadow-sm">
-            <button onClick={() => setAppMode('autopilot')} className={`py-3.5 px-4 rounded-xl font-bold text-sm transition ${appMode === 'autopilot' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-white border border-slate-200 rounded-2xl p-2 shadow-sm">
+            <button onClick={() => setAppMode('autopilot')} className={`py-3 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-sm transition ${appMode === 'autopilot' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
               ✨ 1-Click Auto-Pilot
             </button>
-            <button onClick={() => setAppMode('series')} className={`py-3.5 px-4 rounded-xl font-bold text-sm transition ${appMode === 'series' ? 'bg-purple-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
+            <button onClick={() => setAppMode('series')} className={`py-3 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-sm transition ${appMode === 'series' ? 'bg-purple-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
               🔄 Series Scheduler
             </button>
-            <button onClick={() => setAppMode('social')} className={`py-3.5 px-4 rounded-xl font-bold text-sm transition ${appMode === 'social' ? 'bg-purple-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
+            <button onClick={() => setAppMode('social')} className={`py-3 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-sm transition ${appMode === 'social' ? 'bg-purple-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
               🔗 Social Publishing ({socialAccounts.length})
             </button>
-            <button onClick={() => setAppMode('manual')} className={`py-3.5 px-4 rounded-xl font-bold text-sm transition ${appMode === 'manual' ? 'bg-purple-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
+            <button onClick={() => setAppMode('manual')} className={`py-3 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-sm transition ${appMode === 'manual' ? 'bg-purple-600 text-white shadow-md' : 'bg-transparent text-slate-600 hover:bg-slate-50'}`}>
               🛠️ Manual Studio
             </button>
           </div>
@@ -571,12 +642,12 @@ export default function Home() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Series Name</label>
-                <input type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. Mystery Vault" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                <input type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. Mystery Vault" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" />
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Niche / Category</label>
-                <select value={niche} onChange={(e) => setNiche(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={niche} onChange={(e) => setNiche(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="True Crime & Mystery">True Crime & Mystery</option>
                   <option value="Scary Stories & Horror">Scary Stories & Horror</option>
                   <option value="Fun Facts & Curiosities">Fun Facts & Curiosities</option>
@@ -594,7 +665,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Tone & Style</label>
-                <select value={tone} onChange={(e) => setTone(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={tone} onChange={(e) => setTone(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="Dramatic, Suspenseful & Intense">Dramatic, Suspenseful & Intense</option>
                   <option value="Energetic & Fast-Paced (Viral Hook)">Energetic & Fast-Paced (Viral Hook)</option>
                   <option value="Calm, Deep & Storytelling">Calm, Deep & Storytelling</option>
@@ -608,7 +679,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">AI Voice Actor Catalog</label>
-                <select value={voice} onChange={(e) => setVoice(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={voice} onChange={(e) => setVoice(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <optgroup label="United States Voices">
                     <option value="en-US-JennyNeural">Jenny (US Female - Natural/Friendly)</option>
                     <option value="en-US-GuyNeural">Guy (US Male - Professional/Deep)</option>
@@ -630,7 +701,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Video Duration</label>
-                <select value={duration} onChange={(e) => setDuration(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={duration} onChange={(e) => setDuration(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="15-20 seconds (Short Hook)">15-20 seconds (Short Hook)</option>
                   <option value="30-40 seconds (Standard Reel)">30-40 seconds (Standard Reel)</option>
                   <option value="50-60 seconds (Long Reel)">50-60 seconds (Long Reel)</option>
@@ -641,12 +712,12 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Publish Schedule Time</label>
-                <input type="text" value={publishTime} onChange={(e) => setPublishTime(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="e.g. 04:30 PM" />
+                <input type="text" value={publishTime} onChange={(e) => setPublishTime(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" placeholder="e.g. 04:30 PM" />
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Video Format (Aspect Ratio)</label>
-                <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="9:16">9:16 (TikTok, Reels, Shorts)</option>
                   <option value="16:9">16:9 (YouTube Landscape)</option>
                   <option value="1:1">1:1 (Square Post)</option>
@@ -655,7 +726,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Background Music Mood</label>
-                <select value={bgmTrack} onChange={(e) => setBgmTrack(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={bgmTrack} onChange={(e) => setBgmTrack(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="cinematic">Cinematic</option>
                   <option value="suspense">Suspense</option>
                   <option value="lofi">Lofi</option>
@@ -665,7 +736,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Subtitle Color Style</label>
-                <select value={captionColor} onChange={(e) => setCaptionColor(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={captionColor} onChange={(e) => setCaptionColor(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="yellow">Neon Yellow (Viral Standard)</option>
                   <option value="white">Pure White</option>
                   <option value="green">Electric Green</option>
@@ -675,7 +746,7 @@ export default function Home() {
 
               <div className="md:col-span-2 lg:col-span-3">
                 <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Custom Topic / Angle Description</label>
-                <input type="text" value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="e.g. Unsolved mysteries of the deep ocean..." />
+                <input type="text" value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" placeholder="e.g. Unsolved mysteries of the deep ocean..." />
               </div>
             </div>
 
@@ -708,12 +779,12 @@ export default function Home() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Series Name</label>
-                <input type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. Daily Facts" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                <input type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. Daily Facts" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" />
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Niche / Category</label>
-                <select value={niche} onChange={(e) => setNiche(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={niche} onChange={(e) => setNiche(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="True Crime & Mystery">True Crime & Mystery</option>
                   <option value="Scary Stories & Horror">Scary Stories & Horror</option>
                   <option value="Fun Facts & Curiosities">Fun Facts & Curiosities</option>
@@ -731,7 +802,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Tone & Style</label>
-                <select value={tone} onChange={(e) => setTone(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={tone} onChange={(e) => setTone(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="Dramatic, Suspenseful & Intense">Dramatic, Suspenseful & Intense</option>
                   <option value="Energetic & Fast-Paced (Viral Hook)">Energetic & Fast-Paced (Viral Hook)</option>
                   <option value="Calm, Deep & Storytelling">Calm, Deep & Storytelling</option>
@@ -745,7 +816,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">AI Voice Actor</label>
-                <select value={voice} onChange={(e) => setVoice(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={voice} onChange={(e) => setVoice(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <optgroup label="United States Voices">
                     <option value="en-US-JennyNeural">Jenny (US Female)</option>
                     <option value="en-US-GuyNeural">Guy (US Male)</option>
@@ -767,7 +838,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Video Duration</label>
-                <select value={duration} onChange={(e) => setDuration(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={duration} onChange={(e) => setDuration(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="15-20 seconds (Short Hook)">15-20 seconds (Short Hook)</option>
                   <option value="30-40 seconds (Standard Reel)">30-40 seconds (Standard Reel)</option>
                   <option value="50-60 seconds (Long Reel)">50-60 seconds (Long Reel)</option>
@@ -778,7 +849,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Video Format (Aspect Ratio)</label>
-                <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="9:16">9:16 (TikTok, Reels, Shorts)</option>
                   <option value="16:9">16:9 (YouTube Landscape)</option>
                   <option value="1:1">1:1 (Square Post)</option>
@@ -787,7 +858,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Background Music</label>
-                <select value={bgmTrack} onChange={(e) => setBgmTrack(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={bgmTrack} onChange={(e) => setBgmTrack(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="cinematic">Cinematic</option>
                   <option value="suspense">Suspense</option>
                   <option value="lofi">Lofi</option>
@@ -797,7 +868,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Subtitle Color Style</label>
-                <select value={captionColor} onChange={(e) => setCaptionColor(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={captionColor} onChange={(e) => setCaptionColor(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value="yellow">Neon Yellow</option>
                   <option value="white">Pure White</option>
                   <option value="green">Electric Green</option>
@@ -807,7 +878,7 @@ export default function Home() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Posting Frequency</label>
-                <select value={frequencyHours} onChange={(e) => setFrequencyHours(Number(e.target.value))} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <select value={frequencyHours} onChange={(e) => setFrequencyHours(Number(e.target.value))} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                   <option value={12}>Every 12 Hours (2x Daily)</option>
                   <option value={24}>Every 24 Hours (Daily)</option>
                   <option value={48}>Every 48 Hours (2 Days)</option>
@@ -845,7 +916,7 @@ export default function Home() {
 
               <div className="md:col-span-2 lg:col-span-3">
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Custom Topic / Angle Description</label>
-                <input type="text" value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} placeholder="e.g. Unsolved mysteries of the deep ocean..." className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                <input type="text" value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} placeholder="e.g. Unsolved mysteries of the deep ocean..." className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" />
               </div>
             </div>
 
@@ -870,7 +941,6 @@ export default function Home() {
                         </div>
                         <p className="text-xs text-slate-500">Niche: {s.niche} | Duration: {s.duration || 'Standard'} | Every {s.frequency_hours}h</p>
                         
-                        {/* Target Channels Display */}
                         <div className="flex flex-wrap gap-1 pt-1">
                           {(s.target_platforms || ['facebook', 'youtube', 'tiktok', 'instagram']).map((plat) => (
                             <span key={plat} className="text-[10px] font-bold uppercase bg-purple-100 text-purple-800 px-2 py-0.5 rounded-md">
@@ -906,14 +976,13 @@ export default function Home() {
             <p className="text-xs text-slate-500">Connect your platform channels with 1-click OAuth. When your scheduled series run, videos will automatically post to your feed.</p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* YouTube Shorts Connect */}
               <button
                 onClick={() => {
                   const origin = window.location.origin;
-                  const clientId = process.env.NEXT_PUBLIC_YOUTUBE_CLIENT_ID;
+                  const clientId = process.env.NEXT_PUBLIC_YOUTUBE_CLIENT_ID || '';
                   const redirectUri = `${origin}/api/auth/callback/youtube`;
                   const scope = 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly';
-                  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=clientId&redirecturi={encodeURIComponent(redirectUri)}&scope=encodeURIComponent(scope)&accesstype=offline&prompt=consent&state={user?.id || ''}`;
+                  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&access_type=offline&prompt=consent&state=${user?.id || ''}`;
                   window.location.href = authUrl;
                 }}
                 className="p-5 bg-red-50 border border-red-200 hover:bg-red-100 rounded-2xl flex flex-col items-center justify-center space-y-2 transition shadow-sm group"
@@ -923,7 +992,6 @@ export default function Home() {
                 <span className="text-[10px] text-slate-500">OAuth 1-Click Authorization</span>
               </button>
 
-              {/* TikTok Connect */}
               <button
                 onClick={() => {
                   window.location.href = '/api/auth/tiktok';
@@ -935,7 +1003,6 @@ export default function Home() {
                 <span className="text-[10px] text-slate-500">OAuth 1-Click Authorization</span>
               </button>
 
-              {/* Instagram Reels Connect */}
               <button
                 onClick={() => window.location.href = '/api/auth/facebook'}
                 className="p-5 bg-pink-50 border border-pink-200 hover:bg-pink-100 rounded-2xl flex flex-col items-center justify-center space-y-2 transition shadow-sm group"
@@ -945,7 +1012,6 @@ export default function Home() {
                 <span className="text-[10px] text-slate-500">Meta Graph API</span>
               </button>
 
-              {/* Facebook Reels Connect */}
               <button
                 onClick={() => window.location.href = '/api/auth/facebook'}
                 className="p-5 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-2xl flex flex-col items-center justify-center space-y-2 transition shadow-sm group"
@@ -1007,7 +1073,7 @@ export default function Home() {
                   key={stepItem.num}
                   onClick={() => setCurrentStep(stepItem.num as 1 | 2 | 3)}
                   disabled={(stepItem.num === 2 && !script) || (stepItem.num === 3 && !isStep2Complete)}
-                  className={`py-3.5 px-4 rounded-xl text-center transition-all flex flex-col items-center justify-center ${
+                  className={`py-3.5 px-2 sm:px-4 rounded-xl text-center transition-all flex flex-col items-center justify-center ${
                     currentStep === stepItem.num ? 'bg-purple-600 text-white font-bold shadow-md' : currentStep > stepItem.num || (stepItem.num === 2 && script) || (stepItem.num === 3 && isStep2Complete) ? 'bg-slate-50 text-purple-600 border border-purple-200 hover:bg-slate-100' : 'bg-slate-50 text-slate-400 cursor-not-allowed border border-slate-200'
                   }`}
                 >
@@ -1027,12 +1093,12 @@ export default function Home() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Series Name</label>
-                    <input type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. Mystery Vault" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                    <input type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)} placeholder="e.g. Mystery Vault" className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" />
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Niche / Category</label>
-                    <select value={niche} onChange={(e) => setNiche(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <select value={niche} onChange={(e) => setNiche(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                       <option value="True Crime & Mystery">True Crime & Mystery</option>
                       <option value="Scary Stories & Horror">Scary Stories & Horror</option>
                       <option value="Fun Facts & Curiosities">Fun Facts & Curiosities</option>
@@ -1050,7 +1116,7 @@ export default function Home() {
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Tone & Style</label>
-                    <select value={tone} onChange={(e) => setTone(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <select value={tone} onChange={(e) => setTone(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                       <option value="Dramatic, Suspenseful & Intense">Dramatic, Suspenseful & Intense</option>
                       <option value="Energetic & Fast-Paced (Viral Hook)">Energetic & Fast-Paced (Viral Hook)</option>
                       <option value="Calm, Deep & Storytelling">Calm, Deep & Storytelling</option>
@@ -1064,7 +1130,7 @@ export default function Home() {
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Video Duration</label>
-                    <select value={duration} onChange={(e) => setDuration(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <select value={duration} onChange={(e) => setDuration(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                       <option value="15-20 seconds (Short Hook)">15-20 seconds (Short Hook)</option>
                       <option value="30-40 seconds (Standard Reel)">30-40 seconds (Standard Reel)</option>
                       <option value="50-60 seconds (Long Reel)">50-60 seconds (Long Reel)</option>
@@ -1075,12 +1141,12 @@ export default function Home() {
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Publish Schedule Time</label>
-                    <input type="text" value={publishTime} onChange={(e) => setPublishTime(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="e.g. 04:30 PM" />
+                    <input type="text" value={publishTime} onChange={(e) => setPublishTime(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" placeholder="e.g. 04:30 PM" />
                   </div>
 
                   <div className="md:col-span-2 lg:col-span-1">
                     <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Custom Topic / Angle Description</label>
-                    <input type="text" value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="e.g. Unsolved mysteries of the deep ocean..." />
+                    <input type="text" value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12" placeholder="e.g. Unsolved mysteries of the deep ocean..." />
                   </div>
                 </div>
 
@@ -1110,7 +1176,7 @@ export default function Home() {
                   </div>
                 )}
 
-                <div className="flex gap-4">
+                <div className="flex flex-col sm:flex-row gap-4">
                   <button onClick={handleGenerateScript} disabled={isGeneratingScript} className="flex-1 py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md flex items-center justify-center transition">
                     {isGeneratingScript ? <><LoadingSpinner /> Generating...</> : '1. Generate Script & Shots ➔'}
                   </button>
@@ -1128,7 +1194,7 @@ export default function Home() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4 shadow-sm">
                     <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-3">🎙 Generate Voiceover MP3</h3>
-                    <select value={voice} onChange={(e) => setVoice(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <select value={voice} onChange={(e) => setVoice(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                       <optgroup label="United States Voices">
                         <option value="en-US-JennyNeural">Jenny (US Female)</option>
                         <option value="en-US-GuyNeural">Guy (US Male)</option>
@@ -1164,7 +1230,7 @@ export default function Home() {
                 {shots.length > 0 && (
                   <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4 shadow-sm">
                     <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-3">🖼️ Fetched Media Clips Preview</h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                       {shots.map((shot, idx) => {
                         const mediaSrc = shot.videoUrl || shot.url || shot.imageUrl || '';
                         const isVideo = mediaSrc.includes('.mp4') || mediaSrc.includes('pixabay') || mediaSrc.includes('video');
@@ -1190,7 +1256,7 @@ export default function Home() {
                 )}
 
                 <div className="flex justify-end">
-                  <button onClick={() => setCurrentStep(3)} disabled={!isStep2Complete} className="px-8 py-4 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold rounded-xl shadow-md transition">
+                  <button onClick={() => setCurrentStep(3)} disabled={!isStep2Complete} className="w-full sm:w-auto px-8 py-4 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold rounded-xl shadow-md transition">
                     Proceed to Studio Preview (Step 3) ➔
                   </button>
                 </div>
@@ -1236,18 +1302,18 @@ export default function Home() {
                   <div className="w-full space-y-6">
                     <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-4 shadow-sm">
                       <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700">Export Settings</h3>
-                      <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-white border border-slate-300 rounded-xl p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                      <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-white border border-slate-300 rounded-xl p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                         <option value="9:16">9:16 (TikTok, Reels, Shorts)</option>
                         <option value="16:9">16:9 (YouTube Landscape)</option>
                         <option value="1:1">1:1 (Square Post)</option>
                       </select>
-                      <select value={bgmTrack} onChange={(e) => setBgmTrack(e.target.value)} className="w-full bg-white border border-slate-300 rounded-xl p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                      <select value={bgmTrack} onChange={(e) => setBgmTrack(e.target.value)} className="w-full bg-white border border-slate-300 rounded-xl p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                         <option value="cinematic">Cinematic BGM</option>
                         <option value="suspense">Suspense BGM</option>
                         <option value="lofi">Lofi BGM</option>
                         <option value="inspirational">Inspirational BGM</option>
                       </select>
-                      <select value={captionColor} onChange={(e) => setCaptionColor(e.target.value)} className="w-full bg-white border border-slate-300 rounded-xl p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                      <select value={captionColor} onChange={(e) => setCaptionColor(e.target.value)} className="w-full bg-white border border-slate-300 rounded-xl p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 h-12">
                         <option value="yellow">Neon Yellow Captions</option>
                         <option value="white">White Captions</option>
                         <option value="green">Electric Green Captions</option>
@@ -1285,7 +1351,7 @@ export default function Home() {
           {history.length === 0 ? (
             <div className="py-6 text-center text-xs text-slate-400 italic">No saved projects found for this account.</div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {history.map((item) => (
                 <button key={item.id} onClick={() => handleSelectHistoryItem(item)} className="text-left p-4 rounded-xl border bg-slate-50 border-slate-200 hover:border-purple-300 hover:bg-purple-50/30 transition shadow-sm">
                   <p className="font-bold text-sm text-slate-900 truncate">{item.series_name}</p>
@@ -1296,8 +1362,62 @@ export default function Home() {
           )}
         </div>
 
+        {/* Global Dashboard Footer with Privacy Policy */}
+        <footer className="text-center pt-8 border-t border-slate-200 text-xs text-slate-500 space-y-1">
+          <p>© {new Date().getFullYear()} Autofrix AI. All rights reserved.</p>
+          <p>
+            <a href="#privacy" onClick={(e) => { e.preventDefault(); alert('Privacy Policy: All data is kept secure and processed via Supabase & Vercel serverless functions.'); }} className="text-purple-600 hover:underline">Privacy Policy</a> |{' '}
+            <a href="#terms" onClick={(e) => { e.preventDefault(); alert('Terms of Service: Automated video generation platform for creators.'); }} className="text-purple-600 hover:underline">Terms of Service</a>
+          </p>
+        </footer>
+
       </div>
+
+      {/* ============================================================== */}
+      {/* USER PROFILE MODAL */}
+      {/* ============================================================== */}
+      {isProfileOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-slate-900 p-6 text-white shadow-2xl border border-slate-800 space-y-6">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+              <h3 className="text-xl font-bold">User Profile & Account</h3>
+              <button onClick={() => setIsProfileOpen(false)} className="text-slate-400 hover:text-white text-xl p-1">✕</button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Email Address</p>
+                <p className="text-sm font-medium text-purple-300 break-all">{user.email}</p>
+              </div>
+
+              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Account Plan</p>
+                <p className="text-sm font-semibold text-emerald-400">Free Tier (Supabase Storage & Vercel)</p>
+              </div>
+
+              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
+                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Saved Projects Count</p>
+                <p className="text-sm font-semibold text-indigo-300">{history.length} projects stored</p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 pt-2">
+              <button 
+                onClick={handleLogout}
+                className="w-full py-3.5 px-4 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold border border-red-500/30 transition flex items-center justify-center gap-2"
+              >
+                <span>🚪</span> Sign Out
+              </button>
+              <button 
+                onClick={() => setIsProfileOpen(false)}
+                className="w-full py-3.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition"
+              >
+                Close Profile
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
-

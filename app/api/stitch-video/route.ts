@@ -58,7 +58,6 @@ function generateAssSubtitleFile(shots: Shot[], filePath: string, width: number,
   const marginV = height === 1080 ? 150 : 520;
   const primaryColor = getAssColorHex(captionColor);
 
-  // Using 'DejaVu Sans' for guaranteed Linux/Vercel serverless compatibility
   const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${width}
@@ -133,10 +132,8 @@ export async function POST(req: Request) {
       targetHeight = 1080;
     }
 
-    const downloadedClips: string[] = [];
-
-    for (let i = 0; i < shots.length; i++) {
-      const shot = shots[i];
+    // Process all shots in parallel for maximum rendering speed
+    const clipPromises = shots.map(async (shot: Shot, i: number) => {
       const mediaUrl = shot.videoUrl || shot.imageUrl;
       const duration = shot.durationSeconds || 5;
       const clipPath = path.join(tmpDir, `clip_${i}.${shot.videoUrl ? 'mp4' : 'jpg'}`);
@@ -160,19 +157,22 @@ export async function POST(req: Request) {
                 `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
               );
             }
-
-            downloadedClips.push(normPath);
-            continue;
+            return normPath;
           }
         } catch (err) {}
       }
 
+      // Fallback background color block if media fetch fails
       await execPromise(
         `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
       );
-      downloadedClips.push(normPath);
-    }
+      return normPath;
+    });
 
+    const downloadedClips = await Promise.all(clipPromises);
+
+    // Download Voiceover & Background Music in parallel
+    const audioPromises = [];
     let audioPath = '';
     if (audioUrl) {
       audioPath = path.join(tmpDir, 'voiceover.mp3');
@@ -180,24 +180,31 @@ export async function POST(req: Request) {
         const base64Data = audioUrl.split(',')[1];
         fs.writeFileSync(audioPath, Buffer.from(base64Data, 'base64'));
       } else {
-        const res = await fetch(audioUrl);
-        const buffer = await res.arrayBuffer();
-        fs.writeFileSync(audioPath, Buffer.from(buffer));
+        audioPromises.push(
+          fetch(audioUrl).then(async (res) => {
+            if (res.ok) {
+              const buffer = await res.arrayBuffer();
+              fs.writeFileSync(audioPath, Buffer.from(buffer));
+            }
+          }).catch(() => {})
+        );
       }
     }
 
     let bgmPath = '';
     const selectedMood = bgmTrack && BGM_LIBRARY[bgmTrack] ? bgmTrack : 'cinematic';
     const bgmUrl = BGM_LIBRARY[selectedMood];
-   
-    try {
-      const bgmRes = await fetch(bgmUrl);
-      if (bgmRes.ok) {
-        bgmPath = path.join(tmpDir, 'bgm.mp3');
-        const bgmBuffer = await bgmRes.arrayBuffer();
-        fs.writeFileSync(bgmPath, Buffer.from(bgmBuffer));
-      }
-    } catch (err) {}
+    audioPromises.push(
+      fetch(bgmUrl).then(async (bgmRes) => {
+        if (bgmRes.ok) {
+          bgmPath = path.join(tmpDir, 'bgm.mp3');
+          const bgmBuffer = await bgmRes.arrayBuffer();
+          fs.writeFileSync(bgmPath, Buffer.from(bgmBuffer));
+        }
+      }).catch(() => {})
+    );
+
+    await Promise.all(audioPromises);
 
     const listPath = path.join(tmpDir, 'files.txt');
     const fileListContent = downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n');
@@ -212,19 +219,19 @@ export async function POST(req: Request) {
 
     let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
 
-    if (audioPath && bgmPath) {
-      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k "${outputPath}"`;
+    if (audioPath && bgmPath && fs.existsSync(bgmPath)) {
+      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k "${outputPath}"`;
     } else if (audioPath) {
-      ffmpegCmd += ` -i "${audioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset fast -c:a aac -b:a 128k -shortest "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
     } else {
-      ffmpegCmd += ` -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset fast "${outputPath}"`;
+      ffmpegCmd += ` -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast "${outputPath}"`;
     }
 
     await execPromise(ffmpegCmd);
 
-    // Read the compiled video from tmp and upload to Supabase Storage bucket 'videos'
+    // Read compiled video and upload directly to Supabase Storage bucket 'videos'
     const videoBuffer = fs.readFileSync(outputPath);
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from('videos')
       .upload(outputFileName, videoBuffer, {
         contentType: 'video/mp4',
