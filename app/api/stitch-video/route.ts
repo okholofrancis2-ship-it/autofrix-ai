@@ -24,6 +24,7 @@ interface Shot {
   durationSeconds: number;
   videoUrl?: string | null;
   imageUrl?: string | null;
+  url?: string | null;
 }
 
 const BGM_LIBRARY: Record<string, string> = {
@@ -53,6 +54,7 @@ function getAssColorHex(colorName: string): string {
   }
 }
 
+// Accurate subtitle generator with snappy 3-word chunking for perfect sync
 function generateAssSubtitleFile(shots: Shot[], filePath: string, width: number, height: number, captionColor: string) {
   const fontSize = width === 1920 ? 80 : 64;
   const marginV = height === 1080 ? 150 : 520;
@@ -81,7 +83,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     if (narration) {
       const words = narration.split(/\s+/);
-      const chunkSize = 4;
+      const chunkSize = 3; // 3 words per caption block for optimal viral reading speed
       const chunks: string[] = [];
 
       for (let i = 0; i < words.length; i += chunkSize) {
@@ -132,9 +134,9 @@ export async function POST(req: Request) {
       targetHeight = 1080;
     }
 
-    // Process all shots in parallel for maximum rendering speed
+    // Process all clips in parallel for maximum speed
     const clipPromises = shots.map(async (shot: Shot, i: number) => {
-      const mediaUrl = shot.videoUrl || shot.imageUrl;
+      const mediaUrl = shot.videoUrl || shot.url || shot.imageUrl;
       const duration = shot.durationSeconds || 5;
       const clipPath = path.join(tmpDir, `clip_${i}.${shot.videoUrl ? 'mp4' : 'jpg'}`);
       const normPath = path.join(tmpDir, `norm_${i}.mp4`);
@@ -146,7 +148,7 @@ export async function POST(req: Request) {
             const buffer = await res.arrayBuffer();
             fs.writeFileSync(clipPath, Buffer.from(buffer));
 
-            if (shot.videoUrl) {
+            if (shot.videoUrl || mediaUrl.includes('.mp4')) {
               await execPromise(
                 `"${ffmpegPath}" -y -i "${clipPath}" -t ${duration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
               );
@@ -157,12 +159,12 @@ export async function POST(req: Request) {
                 `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
               );
             }
+
             return normPath;
           }
         } catch (err) {}
       }
 
-      // Fallback background color block if media fetch fails
       await execPromise(
         `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
       );
@@ -171,7 +173,7 @@ export async function POST(req: Request) {
 
     const downloadedClips = await Promise.all(clipPromises);
 
-    // Download Voiceover & Background Music in parallel
+    // Download Audio & BGM in parallel
     const audioPromises = [];
     let audioPath = '';
     if (audioUrl) {
@@ -211,7 +213,7 @@ export async function POST(req: Request) {
     fs.writeFileSync(listPath, fileListContent, 'utf8');
 
     const assPath = path.join(tmpDir, 'subtitles.ass');
-    generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor);
+    generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor || 'yellow');
 
     const outputFileName = `video_${Date.now()}.mp4`;
     const outputPath = path.join(tmpDir, outputFileName);
@@ -229,7 +231,7 @@ export async function POST(req: Request) {
 
     await execPromise(ffmpegCmd);
 
-    // Read compiled video and upload directly to Supabase Storage bucket 'videos'
+    // Upload compiled video to Supabase Storage bucket 'videos'
     const videoBuffer = fs.readFileSync(outputPath);
     const { error: uploadError } = await supabase.storage
       .from('videos')

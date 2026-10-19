@@ -602,15 +602,19 @@ export default function Home() {
               <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Autofrix AI</h1>
               <p className="text-slate-500 text-sm mt-1">Automated cinematic scriptwriting, voiceover synthesis, and video pipeline</p>
             </div>
+            
+            {/* Professional Profile Button replacing loose email & sign out */}
             <div className="flex items-center gap-3">
               <button 
                 onClick={() => setIsProfileOpen(true)}
-                className="flex items-center gap-2 text-xs text-slate-700 font-mono bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm hover:bg-slate-50 transition"
+                className="flex items-center gap-2.5 text-xs text-slate-700 font-medium bg-white px-4 py-2.5 rounded-2xl border border-slate-200 shadow-sm hover:bg-slate-50 transition group"
               >
-                <span>👤</span>
-                <span className="truncate max-w-[180px] sm:max-w-xs">{user.email}</span>
+                <div className="w-7 h-7 rounded-xl bg-purple-600 text-white font-bold flex items-center justify-center text-xs shadow-sm">
+                  {user.email ? user.email[0].toUpperCase() : 'U'}
+                </div>
+                <span className="truncate max-w-[150px] sm:max-w-xs">{user.email}</span>
+                <span className="text-slate-400 group-hover:text-slate-600 text-[10px]">▼</span>
               </button>
-              <button onClick={handleLogout} className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 text-xs font-semibold rounded-xl hover:bg-red-100 transition">Sign Out</button>
             </div>
           </div>
 
@@ -1374,43 +1378,57 @@ export default function Home() {
       </div>
 
       {/* ============================================================== */}
-      {/* USER PROFILE MODAL */}
+      {/* USER PROFILE MODAL (Pro Web App Style) */}
       {/* ============================================================== */}
       {isProfileOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl bg-slate-900 p-6 text-white shadow-2xl border border-slate-800 space-y-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md rounded-3xl bg-slate-900 p-6 sm:p-8 text-white shadow-2xl border border-slate-800 space-y-6">
             <div className="flex justify-between items-center border-b border-slate-800 pb-4">
-              <h3 className="text-xl font-bold">User Profile & Account</h3>
-              <button onClick={() => setIsProfileOpen(false)} className="text-slate-400 hover:text-white text-xl p-1">✕</button>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 text-white font-bold flex items-center justify-center text-lg shadow-lg">
+                  {user.email ? user.email[0].toUpperCase() : 'U'}
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold">Account Profile</h3>
+                  <p className="text-xs text-slate-400">Manage your subscription & settings</p>
+                </div>
+              </div>
+              <button onClick={() => setIsProfileOpen(false)} className="text-slate-400 hover:text-white text-xl p-2 rounded-xl bg-slate-800/50 hover:bg-slate-800 transition">✕</button>
             </div>
 
             <div className="space-y-4">
-              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
-                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Email Address</p>
+              <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/50 space-y-1">
+                <p className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Email Address</p>
                 <p className="text-sm font-medium text-purple-300 break-all">{user.email}</p>
               </div>
 
-              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
-                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Account Plan</p>
-                <p className="text-sm font-semibold text-emerald-400">Free Tier (Supabase Storage & Vercel)</p>
+              <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/50 space-y-1">
+                <p className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Account Plan</p>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-bold text-emerald-400">Free Creator Tier</span>
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2.5 py-1 rounded-full border border-emerald-500/30 font-semibold">Active</span>
+                </div>
               </div>
 
-              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50">
-                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Saved Projects Count</p>
-                <p className="text-sm font-semibold text-indigo-300">{history.length} projects stored</p>
+              <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/50 space-y-1">
+                <p className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Storage & Projects</p>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate-300">Saved Projects Stored</span>
+                  <span className="font-bold text-indigo-300">{history.length} projects</span>
+                </div>
               </div>
             </div>
 
             <div className="flex flex-col gap-3 pt-2">
               <button 
                 onClick={handleLogout}
-                className="w-full py-3.5 px-4 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold border border-red-500/30 transition flex items-center justify-center gap-2"
+                className="w-full py-4 px-4 rounded-2xl bg-red-600/20 hover:bg-red-600/30 text-red-400 font-bold border border-red-500/30 transition flex items-center justify-center gap-2"
               >
-                <span>🚪</span> Sign Out
+                <span>🚪</span> Sign Out of Account
               </button>
               <button 
                 onClick={() => setIsProfileOpen(false)}
-                className="w-full py-3.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition"
+                className="w-full py-3.5 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition"
               >
                 Close Profile
               </button>
