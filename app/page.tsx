@@ -1174,6 +1174,42 @@ export default function Home() {
                           </div>
                           <p className="text-xs text-slate-700 font-medium">🗣️ {shot.narration}</p>
                           <p className="text-[11px] text-slate-500 italic">🎥 Prompt: {shot.visualPrompt}</p>
+                        <div className="flex gap-2 items-center mt-3 pt-2 border-t border-slate-200">
+      <input
+        type="text"
+        value={shot.searchKeywords || ''}
+        onChange={(e) => {
+          const updatedShots = [...shots];
+          updatedShots[idx].searchKeywords = e.target.value;
+          setShots(updatedShots);
+        }}
+        placeholder="Type custom keywords..."
+        className="flex-1 bg-white border border-slate-300 rounded px-2.5 py-1 text-xs text-slate-800 focus:outline-none focus:border-purple-500"
+      />
+      <button
+        onClick={async () => {
+          try {
+            const res = await fetch('/api/fetch-single-video', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ keyword: shot.searchKeywords, niche })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              const updatedShots = [...shots];
+              updatedShots[idx].videoUrl = data.videoUrl;
+              updatedShots[idx].imageUrl = data.imageUrl;
+              setShots(updatedShots);
+            }
+          } catch (err) {
+            console.error('Failed to re-fetch scene:', err);
+          }
+        }}
+        className="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 py-1 rounded transition font-medium cursor-pointer"
+      >
+        🔄 Re-fetch
+      </button>
+    </div>
                         </div>
                       ))}
                     </div>

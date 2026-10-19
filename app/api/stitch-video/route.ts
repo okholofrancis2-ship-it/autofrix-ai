@@ -72,8 +72,8 @@ function getAssColorHex(colorName: string): string {
 }
 
 function generateAssSubtitleFile(shots: Shot[], filePath: string, width: number, height: number, captionColor: string) {
-  const fontSize = width === 1920 ? 80 : 64;
-  const marginV = height === 1080 ? 150 : 520;
+  const fontSize = width === 1920 ? 76 : 58;
+  const marginV = height === 1080 ? 140 : 480;
   const primaryColor = getAssColorHex(captionColor);
 
   const header = `[Script Info]
@@ -84,7 +84,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralStyle,DejaVu Sans,${fontSize},${primaryColor},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,60,60,${marginV},1
+Style: ViralStyle,Arial,${fontSize},${primaryColor},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -147,7 +147,7 @@ export async function POST(req: Request) {
     const clipPromises = shots.map(async (shot: Shot, i: number) => {
       const mediaUrl = shot.videoUrl || shot.url || shot.imageUrl;
       const clipDuration = shot.durationSeconds || 5;
-      const isVideo = shot.videoUrl || (shot.url && shot.url.includes('.mp4'));
+      const isVideo = Boolean(shot.videoUrl || (shot.url && shot.url.includes('.mp4')));
       const clipPath = path.join(tmpDir, `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`);
       const normPath = path.join(tmpDir, `norm_${i}.mp4`);
 
@@ -205,7 +205,7 @@ export async function POST(req: Request) {
     const listPath = path.join(tmpDir, 'files.txt');
     fs.writeFileSync(listPath, downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
 
-    const assPath = path.join(tmpDir, 'subtitles.ass');
+    const assPath = path.resolve(path.join(tmpDir, 'subtitles.ass'));
     generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor || 'yellow');
 
     const outputFileName = `stitched_${Date.now()}.mp4`;
