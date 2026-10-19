@@ -1,20 +1,27 @@
 import { NextResponse } from 'next/server';
 
-function getSimplifiedKeywords(keywords: string) {
-  const words = keywords
+export const runtime = 'nodejs';
+export const maxDuration = 300;
+
+function getSmartKeywords(keywords: string, niche: string = '') {
+  // Clean special characters and split into words
+  const rawWords = (keywords || niche || 'cinematic background')
     .replace(/[^\w\s]/g, '')
     .split(/\s+/)
-    .filter(word => word.length > 3);
-  return words.slice(0, 2).join(' ');
+    .filter(word => word.length > 2); // Keeps words with 3+ letters (e.g., "car", "dark", "tech")
+
+  // Take up to 3 descriptive words for optimal Pixabay search relevance
+  const selected = rawWords.slice(0, 3).join(' ');
+  return selected || niche || 'cinematic abstract';
 }
 
 export async function POST(req: Request) {
   try {
-    const { shots } = await req.json();
+    const { shots, niche } = await req.json();
     const apiKey = process.env.PIXABAY_API_KEY;
 
     if (!apiKey) {
-      return NextResponse.json({ error: 'PIXABAY_API_KEY is missing in your .env.local file.' }, { status: 500 });
+      return NextResponse.json({ error: 'PIXABAY_API_KEY is missing in your environment variables.' }, { status: 500 });
     }
 
     if (!shots || !Array.isArray(shots)) {
@@ -23,14 +30,14 @@ export async function POST(req: Request) {
 
     const updatedShots = await Promise.all(
       shots.map(async (shot: any) => {
-        const rawKeywords = shot.searchKeywords || 'cinematic dark';
-        const exactQuery = encodeURIComponent(rawKeywords);
-        const simplifiedQuery = encodeURIComponent(getSimplifiedKeywords(rawKeywords)) || exactQuery;
-        
-        // Helper to query either video or image endpoints
+        const smartQuery = getSmartKeywords(shot.searchKeywords || shot.visualPrompt, niche);
+        const encodedQuery = encodeURIComponent(smartQuery);
+        const fallbackQuery = encodeURIComponent(niche || 'cinematic background');
+
+        // Helper to query Pixabay video or image endpoints
         const fetchPixabay = async (type: 'video' | 'image', query: string, orientation: string = 'vertical') => {
           const endpoint = type === 'video' ? 'videos/' : '';
-          const url = `https://pixabay.com/api/${endpoint}?key=${apiKey}&q=${query}&safesearch=true&order=relevant&orientation=${orientation}&per_page=3`;
+          const url = `https://pixabay.com/api/${endpoint}?key=${apiKey}&q=${query}&safesearch=true&order=relevant&orientation=${orientation}&per_page=5`;
           
           try {
             const res = await fetch(url);
@@ -42,25 +49,26 @@ export async function POST(req: Request) {
           }
         };
 
-        // 1. Try fetching videos first
-        let hit = await fetchPixabay('video', exactQuery, 'vertical');
-        if (!hit) hit = await fetchPixabay('video', simplifiedQuery, 'vertical');
-        if (!hit) hit = await fetchPixabay('video', simplifiedQuery, 'all');
-
+        let hit = null;
         let videoUrl = '';
         let imageUrl = '';
 
+        // 1. Try vertical video with smart query
+        hit = await fetchPixabay('video', encodedQuery, 'vertical');
+        // 2. Try all orientations video with smart query
+        if (!hit) hit = await fetchPixabay('video', encodedQuery, 'all');
+        // 3. Try fallback niche video
+        if (!hit) hit = await fetchPixabay('video', fallbackQuery, 'vertical');
+
         if (hit && hit.videos) {
-          // Found a video
           videoUrl = hit.videos.medium?.url || hit.videos.large?.url || hit.videos.small?.url || '';
         } else {
-          // 2. If no video, fall back to fetching images
-          hit = await fetchPixabay('image', exactQuery, 'vertical');
-          if (!hit) hit = await fetchPixabay('image', simplifiedQuery, 'vertical');
-          if (!hit) hit = await fetchPixabay('image', simplifiedQuery, 'all');
-          
+          // Fallback to high-quality images if video search yields nothing
+          hit = await fetchPixabay('image', encodedQuery, 'vertical');
+          if (!hit) hit = await fetchPixabay('image', encodedQuery, 'all');
+          if (!hit) hit = await fetchPixabay('image', fallbackQuery, 'vertical');
+
           if (hit) {
-            // Found an image
             imageUrl = hit.largeImageURL || hit.webformatURL || '';
           }
         }
