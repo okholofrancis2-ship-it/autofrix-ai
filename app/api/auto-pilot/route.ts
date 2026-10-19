@@ -130,6 +130,14 @@ function extractAndParseJSON(rawContent: string) {
   }
 }
 
+function getSmartKeywords(keywords: string, niche: string = '') {
+  const rawWords = (keywords || niche || 'cinematic background')
+    .replace(/[^\w\s]/g, '')
+    .split(/\s+/)
+    .filter(word => word.length > 2);
+  return rawWords.slice(0, 3).join(' ') || niche || 'cinematic abstract';
+}
+
 export async function POST(req: Request) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autofrix-autopilot-'));
 
@@ -141,22 +149,32 @@ export async function POST(req: Request) {
       throw new Error('OPENROUTER_API_KEY is missing.');
     }
 
-    const systemPrompt = `You are a viral video scriptwriter. Return ONLY a valid JSON object (no markdown).
-Structure:
+    const systemPrompt = `You are an expert short-form viral scriptwriter for TikTok, Reels, and YouTube Shorts.
+Create a high-retention cinematic script and shot list.
+You MUST return ONLY a valid JSON object with no markdown formatting or backticks.
+
+CRITICAL REQUIREMENTS:
+1. "searchKeywords" must be HIGHLY SPECIFIC, concrete visual descriptions for stock media search (e.g. "electric car", "luxury interior", "fast sports car").
+2. Follow this exact JSON structure:
 {
-  "script": "Full narration...",
+  "script": "Full continuous narration script here...",
   "shots": [
     {
       "shotNumber": 1,
-      "narration": "Spoken sentence",
-      "visualPrompt": "Cinematic visual",
+      "narration": "First sentence spoken in voiceover...",
+      "visualPrompt": "Detailed cinematic visual description...",
       "searchKeywords": "electric car",
       "durationSeconds": 5
     }
   ]
 }`;
 
-    const userPrompt = `Create viral script for Niche: "${niche || 'Luxury'}`, Series: "${seriesName || 'Series'}`, Tone: "${tone || 'Intense'}`, Duration: "${duration || '30-40 seconds'}`, Custom: "${customPrompt || ''}"`;
+    const userPrompt = `Series Name: ${seriesName || 'Viral Story'}
+Niche: ${niche || 'True Crime & Mystery'}
+Tone: ${tone || 'Dramatic, Suspenseful & Intense'}
+Target Duration: ${duration || '30-40 seconds (Standard Reel)'}
+Publish Time: ${publishTime || '04:30 PM'}
+Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful hook.'}`;
 
     const scriptAiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -185,7 +203,7 @@ Structure:
     const shots: Shot[] = parsedScript.shots || [];
     if (shots.length === 0) throw new Error('AI failed to generate valid shot list.');
 
-    // Voiceover Generation
+    // Generate Voiceover Audio via Edge TTS
     const audioPath = path.join(tmpDir, 'voiceover.mp3');
     try {
       const ttsRes = await fetch('https://edge-tts-api.vercel.app/api/text-to-speech', {
@@ -196,55 +214,69 @@ Structure:
       if (ttsRes.ok) {
         fs.writeFileSync(audioPath, Buffer.from(await ttsRes.arrayBuffer()));
       } else {
-        await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t 20 -c:a libmp3lame "${audioPath}"`);
+        await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t 25 -c:a libmp3lame "${audioPath}"`);
       }
     } catch (err) {
-      await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t 20 -c:a libmp3lame "${audioPath}"`);
+      await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t 25 -c:a libmp3lame "${audioPath}"`);
     }
 
-    // Fetch Video Clips via Pixabay with clean keyword fallback
+    // Fetch Video Clips via Pixabay with Smart Keywords & Fallbacks
     const pixabayKey = process.env.PIXABAY_API_KEY || '';
     const processedShots: Shot[] = [];
 
     for (let i = 0; i < shots.length; i++) {
       const shot = shots[i];
       let videoUrl: string | null = null;
+      let imageUrl: string | null = null;
 
-      // Extract simplified 2-3 word query for Pixabay relevance
-      const rawKeyword = shot.searchKeywords || shot.visualPrompt || niche || 'cinematic';
-      const cleanQuery = encodeURIComponent(rawKeyword.split(' ').slice(0, 3).join(' '));
+      const smartQuery = encodeURIComponent(getSmartKeywords(shot.searchKeywords || shot.visualPrompt, niche));
+      const fallbackQuery = encodeURIComponent(niche || 'cinematic background');
 
-      try {
-        const pixRes = await fetch(`https://pixabay.com/api/videos/?key=${pixabayKey}&q=${cleanQuery}&per_page=3`);
-        const pixData = await pixRes.json();
-        if (pixData.hits && pixData.hits.length > 0) {
-          videoUrl = pixData.hits[0].videos?.medium?.url || pixData.hits[0].videos?.small?.url;
-        }
-      } catch (err) {}
-
-      // Fallback to general niche keyword if specific search fails
-      if (!videoUrl) {
+      const fetchPixabay = async (type: 'video' | 'image', query: string, orientation: string = 'vertical') => {
+        const endpoint = type === 'video' ? 'videos/' : '';
+        const url = `https://pixabay.com/api/${endpoint}?key=${pixabayKey}&q=${query}&safesearch=true&order=relevant&orientation=${orientation}&per_page=3`;
         try {
-          const fallbackRes = await fetch(`https://pixabay.com/api/videos/?key=${pixabayKey}&q=${encodeURIComponent(niche || 'cinematic')}&per_page=3`);
-          const fbData = await fallbackRes.json();
-          if (fbData.hits && fbData.hits.length > 0) {
-            videoUrl = fbData.hits[0].videos?.medium?.url || fbData.hits[0].videos?.small?.url;
-          }
-        } catch (err) {}
+          const res = await fetch(url);
+          if (!res.ok) return null;
+          const data = await res.json();
+          return data.hits && data.hits.length > 0 ? data.hits[0] : null;
+        } catch (e) {
+          return null;
+        }
+      };
+
+      let hit = await fetchPixabay('video', smartQuery, 'vertical');
+      if (!hit) hit = await fetchPixabay('video', smartQuery, 'all');
+      if (!hit) hit = await fetchPixabay('video', fallbackQuery, 'vertical');
+
+      if (hit && hit.videos) {
+        videoUrl = hit.videos.medium?.url || hit.videos.large?.url || hit.videos.small?.url || '';
+      } else {
+        hit = await fetchPixabay('image', smartQuery, 'vertical');
+        if (!hit) hit = await fetchPixabay('image', smartQuery, 'all');
+        if (!hit) hit = await fetchPixabay('image', fallbackQuery, 'vertical');
+        if (hit) {
+          imageUrl = hit.largeImageURL || hit.webformatURL || '';
+        }
       }
 
-      processedShots.push({ ...shot, videoUrl: videoUrl || null, imageUrl: null });
+      processedShots.push({
+        ...shot,
+        videoUrl: videoUrl || null,
+        imageUrl: imageUrl || null
+      });
     }
 
+    // Stitch Video with FFmpeg in Parallel
     let targetWidth = 1080;
     let targetHeight = 1920;
     if (aspectRatio === '16:9') { targetWidth = 1920; targetHeight = 1080; }
     else if (aspectRatio === '1:1') { targetWidth = 1080; targetHeight = 1080; }
 
     const clipPromises = processedShots.map(async (shot: Shot, i: number) => {
-      const mediaUrl = shot.videoUrl;
+      const mediaUrl = shot.videoUrl || shot.imageUrl;
       const clipDuration = shot.durationSeconds || 5;
-      const clipPath = path.join(tmpDir, `clip_${i}.mp4`);
+      const clipPath = path.join(tmpDir, `clip_${i}.${shot.videoUrl ? 'mp4' : 'jpg'}`);
       const normPath = path.join(tmpDir, `norm_${i}.mp4`);
 
       if (mediaUrl) {
@@ -252,9 +284,17 @@ Structure:
           const res = await fetch(mediaUrl);
           if (res.ok) {
             fs.writeFileSync(clipPath, Buffer.from(await res.arrayBuffer()));
-            await execPromise(
-              `"${ffmpegPath}" -y -i "${clipPath}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
-            );
+            if (shot.videoUrl) {
+              await execPromise(
+                `"${ffmpegPath}" -y -i "${clipPath}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
+              );
+            } else {
+              const totalFrames = clipDuration * 30;
+              const sourceCanvasSize = Math.max(targetWidth, targetHeight) * 2;
+              await execPromise(
+                `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+              );
+            }
             return normPath;
           }
         } catch (err) {}
