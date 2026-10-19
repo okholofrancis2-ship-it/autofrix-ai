@@ -27,11 +27,27 @@ interface Shot {
   imageUrl?: string | null;
 }
 
-const BGM_LIBRARY: Record<string, string> = {
-  cinematic: 'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=cinematic-time-lapse-115672.mp3',
-  suspense: 'https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3?filename=suspense-dark-ambient-115682.mp3',
-  lofi: 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf7f6.mp3?filename=lofi-study-112191.mp3',
-  inspirational: 'https://cdn.pixabay.com/download/audio/2022/04/27/audio_031c26b47c.mp3?filename=inspirational-background-112290.mp3'
+const BGM_LIBRARY: Record<string, string[]> = {
+  cinematic: [
+    'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=cinematic-time-lapse-115672.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/10/14/audio_9939f792cb.mp3?filename=cinematic-documentary-119471.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/05/16/audio_db60b09337.mp3?filename=epic-cinematic-trailer-111454.mp3'
+  ],
+  suspense: [
+    'https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3?filename=suspense-dark-ambient-115682.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/08/03/audio_14569527fe.mp3?filename=dark-mystery-trailer-113576.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/11/03/audio_c60144d188.mp3?filename=horror-suspense-ambient-123285.mp3'
+  ],
+  lofi: [
+    'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf7f6.mp3?filename=lofi-study-112191.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/05/16/audio_959f635c03.mp3?filename=lofi-chill-111425.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/01/18/audio_6504a370e2.mp3?filename=lofi-beat-110915.mp3'
+  ],
+  inspirational: [
+    'https://cdn.pixabay.com/download/audio/2022/04/27/audio_031c26b47c.mp3?filename=inspirational-background-112290.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/05/27/audio_179426cb78.mp3?filename=uplifting-corporate-112219.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/11/10/audio_515949e2cf.mp3?filename=successful-corporate-125026.mp3'
+  ]
 };
 
 function formatAssTime(seconds: number): string {
@@ -154,7 +170,7 @@ Create a high-retention cinematic script and shot list.
 You MUST return ONLY a valid JSON object with no markdown formatting or backticks.
 
 CRITICAL REQUIREMENTS:
-1. "searchKeywords" must be HIGHLY SPECIFIC, concrete visual descriptions for stock media search (e.g. "electric car", "luxury interior", "fast sports car").
+1. "searchKeywords" must be HIGHLY SPECIFIC, concrete visual descriptions for stock media search.
 2. Follow this exact JSON structure:
 {
   "script": "Full continuous narration script here...",
@@ -203,7 +219,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
     const shots: Shot[] = parsedScript.shots || [];
     if (shots.length === 0) throw new Error('AI failed to generate valid shot list.');
 
-    // Generate Voiceover Audio via Edge TTS
+    // 1. Generate Voiceover Audio via Edge TTS
     const audioPath = path.join(tmpDir, 'voiceover.mp3');
     try {
       const ttsRes = await fetch('https://edge-tts-api.vercel.app/api/text-to-speech', {
@@ -220,7 +236,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
       await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t 25 -c:a libmp3lame "${audioPath}"`);
     }
 
-    // Fetch Video Clips via Pixabay with Smart Keywords & Fallbacks
+    // 2. Fetch Video Clips via Pixabay with Smart Keywords & Varied Pagination
     const pixabayKey = process.env.PIXABAY_API_KEY || '';
     const processedShots: Shot[] = [];
 
@@ -234,12 +250,17 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
 
       const fetchPixabay = async (type: 'video' | 'image', query: string, orientation: string = 'vertical') => {
         const endpoint = type === 'video' ? 'videos/' : '';
-        const url = `https://pixabay.com/api/${endpoint}?key=${pixabayKey}&q=${query}&safesearch=true&order=relevant&orientation=${orientation}&per_page=3`;
+        const randomPage = Math.floor(Math.random() * 3) + 1;
+        const url = `https://pixabay.com/api/${endpoint}?key=${pixabayKey}&q=${query}&safesearch=true&order=popular&orientation=${orientation}&page=${randomPage}&per_page=10`;
         try {
           const res = await fetch(url);
           if (!res.ok) return null;
           const data = await res.json();
-          return data.hits && data.hits.length > 0 ? data.hits[0] : null;
+          if (data.hits && data.hits.length > 0) {
+            const randomIndex = Math.floor(Math.random() * Math.min(data.hits.length, 6));
+            return data.hits[randomIndex];
+          }
+          return null;
         } catch (e) {
           return null;
         }
@@ -267,7 +288,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
       });
     }
 
-    // Stitch Video with FFmpeg in Parallel
+    // 3. Stitch Video with FFmpeg in Parallel
     let targetWidth = 1080;
     let targetHeight = 1920;
     if (aspectRatio === '16:9') { targetWidth = 1920; targetHeight = 1080; }
@@ -276,7 +297,8 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
     const clipPromises = processedShots.map(async (shot: Shot, i: number) => {
       const mediaUrl = shot.videoUrl || shot.imageUrl;
       const clipDuration = shot.durationSeconds || 5;
-      const clipPath = path.join(tmpDir, `clip_${i}.${shot.videoUrl ? 'mp4' : 'jpg'}`);
+      const isVideo = Boolean(shot.videoUrl);
+      const clipPath = path.join(tmpDir, `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`);
       const normPath = path.join(tmpDir, `norm_${i}.mp4`);
 
       if (mediaUrl) {
@@ -284,7 +306,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
           const res = await fetch(mediaUrl);
           if (res.ok) {
             fs.writeFileSync(clipPath, Buffer.from(await res.arrayBuffer()));
-            if (shot.videoUrl) {
+            if (isVideo) {
               await execPromise(
                 `"${ffmpegPath}" -y -i "${clipPath}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
               );
@@ -308,10 +330,12 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
 
     const downloadedClips = await Promise.all(clipPromises);
 
+    // 4. Randomized BGM Selection
     let bgmPath = '';
-    const selectedMood = bgmTrack && BGM_LIBRARY[bgmTrack] ? bgmTrack : 'cinematic';
+    const moodTracks = BGM_LIBRARY[bgmTrack] || BGM_LIBRARY['cinematic'];
+    const randomBgmUrl = moodTracks[Math.floor(Math.random() * moodTracks.length)];
     try {
-      const bgmRes = await fetch(BGM_LIBRARY[selectedMood]);
+      const bgmRes = await fetch(randomBgmUrl);
       if (bgmRes.ok) {
         bgmPath = path.join(tmpDir, 'bgm.mp3');
         fs.writeFileSync(bgmPath, Buffer.from(await bgmRes.arrayBuffer()));
@@ -330,7 +354,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
 
     let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
     if (fs.existsSync(audioPath) && bgmPath) {
-      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
     } else if (fs.existsSync(audioPath)) {
       ffmpegCmd += ` -i "${audioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
     } else {

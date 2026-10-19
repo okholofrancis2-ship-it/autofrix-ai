@@ -3,16 +3,14 @@ import { NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-function getSmartKeywords(keywords: string, niche: string = '') {
-  // Clean special characters and split into words
-  const rawWords = (keywords || niche || 'cinematic background')
+function getSmartKeywords(keywords: string, niche: string = '', index: number = 0) {
+  const rawWords = (keywords || niche || 'cinematic abstract')
     .replace(/[^\w\s]/g, '')
     .split(/\s+/)
-    .filter(word => word.length > 2); // Keeps words with 3+ letters (e.g., "car", "dark", "tech")
-
-  // Take up to 3 descriptive words for optimal Pixabay search relevance
+    .filter(word => word.length > 2);
+  
   const selected = rawWords.slice(0, 3).join(' ');
-  return selected || niche || 'cinematic abstract';
+  return selected || niche || 'cinematic background';
 }
 
 export async function POST(req: Request) {
@@ -21,7 +19,7 @@ export async function POST(req: Request) {
     const apiKey = process.env.PIXABAY_API_KEY;
 
     if (!apiKey) {
-      return NextResponse.json({ error: 'PIXABAY_API_KEY is missing in your environment variables.' }, { status: 500 });
+      return NextResponse.json({ error: 'PIXABAY_API_KEY is missing.' }, { status: 500 });
     }
 
     if (!shots || !Array.isArray(shots)) {
@@ -29,21 +27,24 @@ export async function POST(req: Request) {
     }
 
     const updatedShots = await Promise.all(
-      shots.map(async (shot: any) => {
-        const smartQuery = getSmartKeywords(shot.searchKeywords || shot.visualPrompt, niche);
-        const encodedQuery = encodeURIComponent(smartQuery);
+      shots.map(async (shot: any, index: number) => {
+        const smartQuery = encodeURIComponent(getSmartKeywords(shot.searchKeywords || shot.visualPrompt, niche, index));
         const fallbackQuery = encodeURIComponent(niche || 'cinematic background');
 
-        // Helper to query Pixabay video or image endpoints
         const fetchPixabay = async (type: 'video' | 'image', query: string, orientation: string = 'vertical') => {
           const endpoint = type === 'video' ? 'videos/' : '';
-          const url = `https://pixabay.com/api/${endpoint}?key=${apiKey}&q=${query}&safesearch=true&order=relevant&orientation=${orientation}&per_page=5`;
+          const randomPage = Math.floor(Math.random() * 3) + 1;
+          const url = `https://pixabay.com/api/${endpoint}?key=${apiKey}&q=${query}&safesearch=true&order=popular&orientation=${orientation}&page=${randomPage}&per_page=10`;
           
           try {
             const res = await fetch(url);
             if (!res.ok) return null;
             const data = await res.json();
-            return data.hits && data.hits.length > 0 ? data.hits[0] : null;
+            if (data.hits && data.hits.length > 0) {
+              const randomIndex = Math.floor(Math.random() * Math.min(data.hits.length, 6));
+              return data.hits[randomIndex];
+            }
+            return null;
           } catch (e) {
             return null;
           }
@@ -53,19 +54,15 @@ export async function POST(req: Request) {
         let videoUrl = '';
         let imageUrl = '';
 
-        // 1. Try vertical video with smart query
-        hit = await fetchPixabay('video', encodedQuery, 'vertical');
-        // 2. Try all orientations video with smart query
-        if (!hit) hit = await fetchPixabay('video', encodedQuery, 'all');
-        // 3. Try fallback niche video
+        hit = await fetchPixabay('video', smartQuery, 'vertical');
+        if (!hit) hit = await fetchPixabay('video', smartQuery, 'all');
         if (!hit) hit = await fetchPixabay('video', fallbackQuery, 'vertical');
 
         if (hit && hit.videos) {
           videoUrl = hit.videos.medium?.url || hit.videos.large?.url || hit.videos.small?.url || '';
         } else {
-          // Fallback to high-quality images if video search yields nothing
-          hit = await fetchPixabay('image', encodedQuery, 'vertical');
-          if (!hit) hit = await fetchPixabay('image', encodedQuery, 'all');
+          hit = await fetchPixabay('image', smartQuery, 'vertical');
+          if (!hit) hit = await fetchPixabay('image', smartQuery, 'all');
           if (!hit) hit = await fetchPixabay('image', fallbackQuery, 'vertical');
 
           if (hit) {

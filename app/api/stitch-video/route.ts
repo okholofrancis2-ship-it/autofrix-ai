@@ -13,7 +13,6 @@ export const maxDuration = 300;
 const execPromise = promisify(exec);
 const ffmpegPath = ffmpegStatic || 'ffmpeg';
 
-// Initialize Supabase client for server-side upload
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -21,17 +20,35 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 interface Shot {
   shotNumber: number;
   narration: string;
+  visualPrompt: string;
+  searchKeywords: string;
   durationSeconds: number;
   videoUrl?: string | null;
   imageUrl?: string | null;
   url?: string | null;
 }
 
-const BGM_LIBRARY: Record<string, string> = {
-  cinematic: 'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=cinematic-time-lapse-115672.mp3',
-  suspense: 'https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3?filename=suspense-dark-ambient-115682.mp3',
-  lofi: 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf7f6.mp3?filename=lofi-study-112191.mp3',
-  inspirational: 'https://cdn.pixabay.com/download/audio/2022/04/27/audio_031c26b47c.mp3?filename=inspirational-background-112290.mp3'
+const BGM_LIBRARY: Record<string, string[]> = {
+  cinematic: [
+    'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=cinematic-time-lapse-115672.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/10/14/audio_9939f792cb.mp3?filename=cinematic-documentary-119471.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/05/16/audio_db60b09337.mp3?filename=epic-cinematic-trailer-111454.mp3'
+  ],
+  suspense: [
+    'https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3?filename=suspense-dark-ambient-115682.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/08/03/audio_14569527fe.mp3?filename=dark-mystery-trailer-113576.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/11/03/audio_c60144d188.mp3?filename=horror-suspense-ambient-123285.mp3'
+  ],
+  lofi: [
+    'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf7f6.mp3?filename=lofi-study-112191.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/05/16/audio_959f635c03.mp3?filename=lofi-chill-111425.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/01/18/audio_6504a370e2.mp3?filename=lofi-beat-110915.mp3'
+  ],
+  inspirational: [
+    'https://cdn.pixabay.com/download/audio/2022/04/27/audio_031c26b47c.mp3?filename=inspirational-background-112290.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/05/27/audio_179426cb78.mp3?filename=uplifting-corporate-112219.mp3',
+    'https://cdn.pixabay.com/download/audio/2022/11/10/audio_515949e2cf.mp3?filename=successful-corporate-125026.mp3'
+  ]
 };
 
 function formatAssTime(seconds: number): string {
@@ -54,7 +71,6 @@ function getAssColorHex(colorName: string): string {
   }
 }
 
-// Accurate subtitle generator with snappy 3-word chunking for perfect sync
 function generateAssSubtitleFile(shots: Shot[], filePath: string, width: number, height: number, captionColor: string) {
   const fontSize = width === 1920 ? 80 : 64;
   const marginV = height === 1080 ? 150 : 520;
@@ -83,7 +99,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     if (narration) {
       const words = narration.split(/\s+/);
-      const chunkSize = 3; // 3 words per caption block for optimal viral reading speed
+      const chunkSize = 3;
       const chunks: string[] = [];
 
       for (let i = 0; i < words.length; i += chunkSize) {
@@ -125,140 +141,103 @@ export async function POST(req: Request) {
 
     let targetWidth = 1080;
     let targetHeight = 1920;
+    if (aspectRatio === '16:9') { targetWidth = 1920; targetHeight = 1080; }
+    else if (aspectRatio === '1:1') { targetWidth = 1080; targetHeight = 1080; }
 
-    if (aspectRatio === '16:9') {
-      targetWidth = 1920;
-      targetHeight = 1080;
-    } else if (aspectRatio === '1:1') {
-      targetWidth = 1080;
-      targetHeight = 1080;
-    }
-
-    // Process all clips in parallel for maximum speed
     const clipPromises = shots.map(async (shot: Shot, i: number) => {
       const mediaUrl = shot.videoUrl || shot.url || shot.imageUrl;
-      const duration = shot.durationSeconds || 5;
-      const clipPath = path.join(tmpDir, `clip_${i}.${shot.videoUrl ? 'mp4' : 'jpg'}`);
+      const clipDuration = shot.durationSeconds || 5;
+      const isVideo = shot.videoUrl || (shot.url && shot.url.includes('.mp4'));
+      const clipPath = path.join(tmpDir, `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`);
       const normPath = path.join(tmpDir, `norm_${i}.mp4`);
 
       if (mediaUrl) {
         try {
           const res = await fetch(mediaUrl);
           if (res.ok) {
-            const buffer = await res.arrayBuffer();
-            fs.writeFileSync(clipPath, Buffer.from(buffer));
-
-            if (shot.videoUrl || mediaUrl.includes('.mp4')) {
+            fs.writeFileSync(clipPath, Buffer.from(await res.arrayBuffer()));
+            if (isVideo) {
               await execPromise(
-                `"${ffmpegPath}" -y -i "${clipPath}" -t ${duration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
+                `"${ffmpegPath}" -y -i "${clipPath}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
               );
             } else {
-              const totalFrames = duration * 30;
+              const totalFrames = clipDuration * 30;
               const sourceCanvasSize = Math.max(targetWidth, targetHeight) * 2;
               await execPromise(
-                `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+                `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
               );
             }
-
             return normPath;
           }
         } catch (err) {}
       }
 
       await execPromise(
-        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${duration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
       );
       return normPath;
     });
 
     const downloadedClips = await Promise.all(clipPromises);
 
-    // Download Audio & BGM in parallel
-    const audioPromises = [];
-    let audioPath = '';
+    let localAudioPath = '';
     if (audioUrl) {
-      audioPath = path.join(tmpDir, 'voiceover.mp3');
-      if (audioUrl.startsWith('data:audio')) {
-        const base64Data = audioUrl.split(',')[1];
-        fs.writeFileSync(audioPath, Buffer.from(base64Data, 'base64'));
-      } else {
-        audioPromises.push(
-          fetch(audioUrl).then(async (res) => {
-            if (res.ok) {
-              const buffer = await res.arrayBuffer();
-              fs.writeFileSync(audioPath, Buffer.from(buffer));
-            }
-          }).catch(() => {})
-        );
-      }
+      try {
+        const audioRes = await fetch(audioUrl);
+        if (audioRes.ok) {
+          localAudioPath = path.join(tmpDir, 'voiceover.mp3');
+          fs.writeFileSync(localAudioPath, Buffer.from(await audioRes.arrayBuffer()));
+        }
+      } catch (err) {}
     }
 
-    let bgmPath = '';
-    const selectedMood = bgmTrack && BGM_LIBRARY[bgmTrack] ? bgmTrack : 'cinematic';
-    const bgmUrl = BGM_LIBRARY[selectedMood];
-    audioPromises.push(
-      fetch(bgmUrl).then(async (bgmRes) => {
-        if (bgmRes.ok) {
-          bgmPath = path.join(tmpDir, 'bgm.mp3');
-          const bgmBuffer = await bgmRes.arrayBuffer();
-          fs.writeFileSync(bgmPath, Buffer.from(bgmBuffer));
-        }
-      }).catch(() => {})
-    );
-
-    await Promise.all(audioPromises);
+    let localBgmPath = '';
+    const moodTracks = BGM_LIBRARY[bgmTrack] || BGM_LIBRARY['cinematic'];
+    const randomBgmUrl = moodTracks[Math.floor(Math.random() * moodTracks.length)];
+    try {
+      const bgmRes = await fetch(randomBgmUrl);
+      if (bgmRes.ok) {
+        localBgmPath = path.join(tmpDir, 'bgm.mp3');
+        fs.writeFileSync(localBgmPath, Buffer.from(await bgmRes.arrayBuffer()));
+      }
+    } catch (err) {}
 
     const listPath = path.join(tmpDir, 'files.txt');
-    const fileListContent = downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n');
-    fs.writeFileSync(listPath, fileListContent, 'utf8');
+    fs.writeFileSync(listPath, downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
 
     const assPath = path.join(tmpDir, 'subtitles.ass');
     generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor || 'yellow');
 
-    const outputFileName = `video_${Date.now()}.mp4`;
+    const outputFileName = `stitched_${Date.now()}.mp4`;
     const outputPath = path.join(tmpDir, outputFileName);
     const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
     let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
-
-    if (audioPath && bgmPath && fs.existsSync(bgmPath)) {
-      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k "${outputPath}"`;
-    } else if (audioPath) {
-      ffmpegCmd += ` -i "${audioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
+    if (localAudioPath && localBgmPath) {
+      ffmpegCmd += ` -i "${localAudioPath}" -i "${localBgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
+    } else if (localAudioPath) {
+      ffmpegCmd += ` -i "${localAudioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
     } else {
       ffmpegCmd += ` -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast "${outputPath}"`;
     }
 
     await execPromise(ffmpegCmd);
 
-    // Upload compiled video to Supabase Storage bucket 'videos'
     const videoBuffer = fs.readFileSync(outputPath);
-    const { error: uploadError } = await supabase.storage
-      .from('videos')
-      .upload(outputFileName, videoBuffer, {
-        contentType: 'video/mp4',
-        upsert: true,
-      });
+    const { error: uploadError } = await supabase.storage.from('videos').upload(outputFileName, videoBuffer, {
+      contentType: 'video/mp4',
+      upsert: true,
+    });
 
-    if (uploadError) {
-      throw new Error(`Supabase upload failed: ${uploadError.message}`);
-    }
+    if (uploadError) throw new Error(`Supabase upload failed: ${uploadError.message}`);
 
-    const { data: publicUrlData } = supabase.storage
-      .from('videos')
-      .getPublicUrl(outputFileName);
-
+    const { data: publicUrlData } = supabase.storage.from('videos').getPublicUrl(outputFileName);
     fs.rmSync(tmpDir, { recursive: true, force: true });
 
     return NextResponse.json({ url: publicUrlData.publicUrl });
   } catch (error: any) {
     console.error('Stitch Video Error:', error);
-    if (fs.existsSync(tmpDir)) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-    return NextResponse.json(
-      { error: error?.message || 'Failed to compile final video.' },
-      { status: 500 }
-    );
+    if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+    return NextResponse.json({ error: error?.message || 'Failed to stitch video.' }, { status: 500 });
   }
 }
