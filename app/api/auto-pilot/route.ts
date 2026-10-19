@@ -1,21 +1,37 @@
+TypeScript
+
 import { NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { execFile as execFileCallback } from 'node:child_process';
+import { promisify } from 'node:util';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import ffmpegStatic from 'ffmpeg-static';
 import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-const execPromise = promisify(exec);
-const ffmpegPath = ffmpegStatic || 'ffmpeg';
+const execFile = promisify(execFileCallback);
+const FFMPEG = ffmpegStatic || 'ffmpeg';
+const FFPROBE = process.env.FFPROBE_PATH || 'ffprobe';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
+const PIXABAY_KEY = process.env.PIXABAY_API_KEY;
+
+// Use the service-role key only on the server. Never expose it to the client.
+const supabase =
+  SUPABASE_URL && SUPABASE_SERVICE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      })
+    : null;
 
 interface Shot {
   shotNumber: number;
@@ -27,470 +43,1031 @@ interface Shot {
   imageUrl?: string | null;
 }
 
+interface DurationSettings {
+  targetDurationSec: number;
+  shotCount: number;
+  shotDuration: number;
+}
+
 const BGM_LIBRARY: Record<string, string[]> = {
   cinematic: [
     'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=cinematic-time-lapse-115672.mp3',
     'https://cdn.pixabay.com/download/audio/2022/10/14/audio_9939f792cb.mp3?filename=cinematic-documentary-119471.mp3',
-    'https://cdn.pixabay.com/download/audio/2022/05/16/audio_db60b09337.mp3?filename=epic-cinematic-trailer-111454.mp3'
+    'https://cdn.pixabay.com/download/audio/2022/05/16/audio_db60b09337.mp3?filename=epic-cinematic-trailer-111454.mp3',
   ],
   suspense: [
     'https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73467.mp3?filename=suspense-dark-ambient-115682.mp3',
     'https://cdn.pixabay.com/download/audio/2022/08/03/audio_14569527fe.mp3?filename=dark-mystery-trailer-113576.mp3',
-    'https://cdn.pixabay.com/download/audio/2022/11/03/audio_c60144d188.mp3?filename=horror-suspense-ambient-123285.mp3'
+    'https://cdn.pixabay.com/download/audio/2022/11/03/audio_c60144d188.mp3?filename=horror-suspense-ambient-123285.mp3',
   ],
   lofi: [
     'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf7f6.mp3?filename=lofi-study-112191.mp3',
     'https://cdn.pixabay.com/download/audio/2022/05/16/audio_959f635c03.mp3?filename=lofi-chill-111425.mp3',
-    'https://cdn.pixabay.com/download/audio/2022/01/18/audio_6504a370e2.mp3?filename=lofi-beat-110915.mp3'
+    'https://cdn.pixabay.com/download/audio/2022/01/18/audio_6504a370e2.mp3?filename=lofi-beat-110915.mp3',
   ],
   inspirational: [
     'https://cdn.pixabay.com/download/audio/2022/04/27/audio_031c26b47c.mp3?filename=inspirational-background-112290.mp3',
     'https://cdn.pixabay.com/download/audio/2022/05/27/audio_179426cb78.mp3?filename=uplifting-corporate-112219.mp3',
-    'https://cdn.pixabay.com/download/audio/2022/11/10/audio_515949e2cf.mp3?filename=successful-corporate-125026.mp3'
-  ]
+    'https://cdn.pixabay.com/download/audio/2022/11/10/audio_515949e2cf.mp3?filename=successful-corporate-125026.mp3',
+  ],
 };
 
-function formatAssTime(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const cs = Math.floor((seconds % 1) * 100);
-  const pad = (n: number, z = 2) => String(n).padStart(z, '0');
-  return `${h}:${pad(m)}:${pad(s)}.${pad(cs)}`;
-}
+const FETCH_TIMEOUT_MS = 25_000;
+const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
+const MAX_SHOTS = 45;
 
-function getAssColorHex(colorName: string): string {
-  switch (colorName) {
-    case 'yellow': return '&H0000FFFF';
-    case 'green': return '&H0000FF00';
-    case 'cyan': return '&H00FFFF00';
-    case 'white':
-    default:
-      return '&H00FFFFFF';
+function assertConfiguration() {
+  const missing: string[] = [];
+
+  if (!SUPABASE_URL) missing.push('NEXT_PUBLIC_SUPABASE_URL');
+  if (!SUPABASE_SERVICE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+  if (!OPENROUTER_KEY) missing.push('OPENROUTER_API_KEY');
+
+  if (missing.length) {
+    throw new Error(`Missing server environment variables: ${missing.join(', ')}`);
   }
 }
 
-function generateAssSubtitleFile(shots: Shot[], filePath: string, width: number, height: number, captionColor: string) {
-  const fontSize = width === 1920 ? 76 : 58;
-  const marginV = height === 1080 ? 140 : 480;
-  const primaryColor = getAssColorHex(captionColor);
+function parseDurationSettings(value: string): DurationSettings {
+  const text = String(value || '50-60 seconds')
+    .toLowerCase()
+    .trim();
+
+  // Explicit minute ranges must be checked before generic numbers.
+  const minuteRange = text.match(/(\d+)\s*(?:-|to)\s*(\d+)\s*min/);
+
+  if (minuteRange) {
+    const min = Number(minuteRange[1]);
+    const max = Number(minuteRange[2]);
+    const target = Math.round(((min + max) / 2) * 60);
+    const count = Math.min(MAX_SHOTS, Math.max(3, Math.round(target / 6)));
+
+    return {
+      targetDurationSec: count * 6,
+      shotCount: count,
+      shotDuration: 6,
+    };
+  }
+
+  const secondsRange = text.match(/(\d+)\s*(?:-|to)\s*(\d+)\s*(?:sec|second)/);
+
+  if (secondsRange) {
+    const min = Number(secondsRange[1]);
+    const max = Number(secondsRange[2]);
+    const target = Math.round((min + max) / 2);
+    const count = Math.min(MAX_SHOTS, Math.max(3, Math.round(target / 6)));
+
+    return {
+      targetDurationSec: count * 6,
+      shotCount: count,
+      shotDuration: 6,
+    };
+  }
+
+  const single = text.match(/(\d+)\s*(min|minute|sec|second)?/);
+
+  if (single) {
+    const valueNumber = Number(single[1]);
+    const isMinutes = /min|minute/.test(single[2] || '');
+    const target = isMinutes ? valueNumber * 60 : valueNumber;
+
+    if (!Number.isFinite(target) || target < 1) {
+      throw new Error('Invalid video duration.');
+    }
+
+    const count = Math.min(MAX_SHOTS, Math.max(3, Math.round(target / 6)));
+
+    return {
+      targetDurationSec: count * 6,
+      shotCount: count,
+      shotDuration: 6,
+    };
+  }
+
+  // Backward-compatible defaults for labels such as "Standard Reel".
+  return {
+    targetDurationSec: 36,
+    shotCount: 6,
+    shotDuration: 6,
+  };
+}
+
+function cleanText(value: unknown, maxLength = 3000): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, maxLength);
+}
+
+function getSmartKeywords(value: string, fallback: string): string {
+  const words = cleanText(value || fallback, 300)
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 2)
+    .slice(0, 5);
+
+  return words.join(' ') || 'cinematic documentary';
+}
+
+function normaliseShots(
+  input: unknown,
+  count: number,
+  duration: number,
+  niche: string,
+): Shot[] {
+  const source = Array.isArray(input) ? input : [];
+
+  if (source.length === 0) {
+    throw new Error('The AI returned no usable shots. Please retry generation.');
+  }
+
+  const valid: Shot[] = source
+    .slice(0, count)
+    .map((item: any, index: number) => ({
+      shotNumber: index + 1,
+      narration: cleanText(item?.narration, 1500),
+      visualPrompt: cleanText(item?.visualPrompt, 1000) || niche,
+      searchKeywords: cleanText(item?.searchKeywords, 300) || niche,
+      durationSeconds: duration,
+      videoUrl: null,
+      imageUrl: null,
+    }));
+
+  // Reuse the last valid shot rather than indexing an empty array.
+  while (valid.length < count) {
+    const previous = valid[valid.length - 1];
+
+    valid.push({
+      ...previous,
+      shotNumber: valid.length + 1,
+      durationSeconds: duration,
+      videoUrl: null,
+      imageUrl: null,
+    });
+  }
+
+  if (valid.some((shot) => !shot.narration)) {
+    throw new Error('One or more generated shots have empty narration.');
+  }
+
+  return valid;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = FETCH_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBuffer(
+  url: string,
+  maxBytes = MAX_MEDIA_BYTES,
+): Promise<Buffer> {
+  const response = await fetchWithTimeout(url);
+
+  if (!response.ok) {
+    throw new Error(`Media download failed with HTTP ${response.status}.`);
+  }
+
+  const declaredSize = Number(response.headers.get('content-length') || 0);
+
+  if (declaredSize > maxBytes) {
+    throw new Error('Media file exceeds the configured size limit.');
+  }
+
+  if (!response.body) {
+    throw new Error('The media server returned an empty response.');
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      total += value.byteLength;
+
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error('Media file exceeds the configured size limit.');
+      }
+
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!total) {
+    throw new Error('Downloaded media is empty.');
+  }
+
+  return Buffer.concat(chunks);
+}
+
+async function runFfmpeg(args: string[], cwd: string): Promise<void> {
+  try {
+    await execFile(FFMPEG, ['-hide_banner', '-loglevel', 'error', ...args], {
+      cwd,
+      timeout: 180_000,
+      maxBuffer: 5 * 1024 * 1024,
+      windowsHide: true,
+    });
+  } catch (error: any) {
+    const stderr = String(error?.stderr || error?.message || 'Unknown FFmpeg error');
+    console.error('FFmpeg failed:', stderr.slice(-5000));
+    throw new Error(`FFmpeg processing failed: ${stderr.slice(-700, -1) || stderr.slice(-700)}`);
+  }
+}
+
+async function probeMedia(filePath: string, cwd: string): Promise<any> {
+  const { stdout } = await execFile(
+    FFPROBE,
+    [
+      '-v', 'error',
+      '-show_entries', 'format=duration:stream=codec_type,codec_name,sample_rate',
+      '-of', 'json',
+      filePath,
+    ],
+    {
+      cwd,
+      timeout: 20_000,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    },
+  );
+
+  return JSON.parse(stdout);
+}
+
+function hasStream(probe: any, type: string): boolean {
+  return Array.isArray(probe?.streams) &&
+    probe.streams.some((stream: any) => stream.codec_type === type);
+}
+
+function formatAssTime(seconds: number): string {
+  const centiseconds = Math.max(0, Math.floor(seconds * 100));
+  const hours = Math.floor(centiseconds / 360000);
+  const minutes = Math.floor((centiseconds % 360000) / 6000);
+  const secs = Math.floor((centiseconds % 6000) / 100);
+
+  return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(centiseconds % 100).padStart(2, '0')}`;
+}
+
+function assEscape(text: string): string {
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/\{/g, '\\{')
+    .replace(/\}/g, '\\}')
+    .replace(/\r?\n/g, ' ')
+    .trim();
+}
+
+function getAssColor(color: string): string {
+  switch (String(color || '').toLowerCase()) {
+    case 'yellow': return '&H0000FFFF';
+    case 'green': return '&H0000FF00';
+    case 'cyan': return '&H00FFFF00';
+    case 'white': return '&H00FFFFFF';
+    default: return '&H0000FFFF';
+  }
+}
+
+function generateAssSubtitles(
+  shots: Shot[],
+  outputPath: string,
+  width: number,
+  height: number,
+  captionColor: string,
+): void {
+  const fontSize = width >= 1920 ? 68 : 54;
+  const marginV = height > width ? Math.round(height * 0.20) : Math.round(height * 0.12);
+  const primaryColor = getAssColor(captionColor);
 
   const header = `[Script Info]
 ScriptType: v4.00+
+WrapStyle: 2
+ScaledBorderAndShadow: yes
 PlayResX: ${width}
 PlayResY: ${height}
-ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ViralStyle,Arial,${fontSize},${primaryColor},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,${marginV},1
+Style: ViralStyle,Arial,${fontSize},${primaryColor},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
 
-  let dialogues = '';
-  let currentTime = 0;
+  let time = 0;
+  let events = '';
 
-  shots.forEach((shot) => {
-    const shotDuration = shot.durationSeconds || 6;
-    const narration = (shot.narration || '').trim();
+  for (const shot of shots) {
+    const duration = shot.durationSeconds || 6;
+    const words = assEscape(shot.narration)
+      .split(/\s+/)
+      .filter(Boolean);
 
-    if (narration) {
-      const words = narration.split(/\s+/);
-      const chunkSize = 3;
-      const chunks: string[] = [];
+    // Three words per caption is readable on mobile.
+    const chunks: string[][] = [];
 
-      for (let i = 0; i < words.length; i += chunkSize) {
-        chunks.push(words.slice(i, i + chunkSize).join(' '));
+    for (let index = 0; index < words.length; index += 3) {
+      chunks.push(words.slice(index, index + 3));
+    }
+
+    let chunkTime = time;
+    const wordCount = Math.max(1, words.length);
+
+    for (const chunk of chunks) {
+      const chunkDuration = duration * chunk.length / wordCount;
+      const end = Math.min(time + duration, chunkTime + chunkDuration);
+
+      if (end > chunkTime) {
+        events += `Dialogue: 0,${formatAssTime(chunkTime)},${formatAssTime(end)},ViralStyle,,0,0,0,,${chunk.join(' ').toUpperCase()}\n`;
       }
 
-      const totalWords = words.length || 1;
-      let chunkStart = currentTime;
-
-      chunks.forEach((chunk) => {
-        const chunkWordCount = chunk.split(/\s+/).length;
-        const chunkDuration = (chunkWordCount / totalWords) * shotDuration;
-        const chunkEnd = chunkStart + chunkDuration;
-
-        const startFormatted = formatAssTime(chunkStart);
-        const endFormatted = formatAssTime(chunkEnd);
-
-        const uppercaseChunk = chunk.toUpperCase();
-        dialogues += `Dialogue: 0,${startFormatted},${endFormatted},ViralStyle,,0,0,0,,${uppercaseChunk}\n`;
-
-        chunkStart = chunkEnd;
-      });
+      chunkTime = end;
     }
-    currentTime += shotDuration;
+
+    time += duration;
+  }
+
+  fs.writeFile(outputPath, header + events, 'utf8').catch((error) => {
+    throw error;
   });
-
-  fs.writeFileSync(filePath, header + dialogues, 'utf8');
 }
 
-function parseDurationSettings(durationStr: string) {
-  const lower = (durationStr || '').toLowerCase();
-  
-  if (lower.includes('4-5') || lower.includes('4 to 5') || lower.includes('5 min')) {
-    return { targetDurationSec: 270, shotCount: 45, shotDuration: 6 };
-  } else if (lower.includes('3-4') || lower.includes('3 to 4') || lower.includes('4 min')) {
-    return { targetDurationSec: 210, shotCount: 35, shotDuration: 6 };
-  } else if (lower.includes('2-3') || lower.includes('2 to 3') || lower.includes('3 min')) {
-    return { targetDurationSec: 150, shotCount: 25, shotDuration: 6 };
-  } else if (lower.includes('1-2') || lower.includes('1 to 2') || lower.includes('2 min')) {
-    return { targetDurationSec: 90, shotCount: 15, shotDuration: 6 };
-  } else if (lower.includes('15') || lower.includes('20')) {
-    return { targetDurationSec: 18, shotCount: 3, shotDuration: 6 };
-  } else if (lower.includes('30') || lower.includes('40')) {
-    return { targetDurationSec: 36, shotCount: 6, shotDuration: 6 };
-  } else if (lower.includes('50') || lower.includes('60')) {
-    return { targetDurationSec: 55, shotCount: 10, shotDuration: 6 };
-  }
+async function createSubtitles(
+  shots: Shot[],
+  outputPath: string,
+  width: number,
+  height: number,
+  captionColor: string,
+): Promise<void> {
+  const fontSize = width >= 1920 ? 68 : 54;
+  const marginV = height > width ? Math.round(height * 0.20) : Math.round(height * 0.12);
 
-  if (lower.includes('min')) {
-    const numbers = lower.match(/\d+/g);
-    if (numbers && numbers.length > 0) {
-      const minutes = parseInt(numbers[0]);
-      const targetSecs = minutes * 60;
-      const shots = Math.max(5, Math.round(targetSecs / 6));
-      return { targetDurationSec: targetSecs, shotCount: shots, shotDuration: 6 };
+  const header = `[Script Info]
+ScriptType: v4.00+
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+PlayResX: ${width}
+PlayResY: ${height}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: ViralStyle,Arial,${fontSize},${getAssColor(captionColor)},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,${marginV},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+  let time = 0;
+  let events = '';
+
+  for (const shot of shots) {
+    const duration = shot.durationSeconds || 6;
+    const words = assEscape(shot.narration).split(/\s+/).filter(Boolean);
+    const chunks: string[][] = [];
+
+    for (let index = 0; index < words.length; index += 3) {
+      chunks.push(words.slice(index, index + 3));
     }
+
+    const totalWords = Math.max(1, words.length);
+    let chunkStart = time;
+
+    for (const chunk of chunks) {
+      const chunkDuration = duration * chunk.length / totalWords;
+      const chunkEnd = Math.min(time + duration, chunkStart + chunkDuration);
+
+      if (chunkEnd > chunkStart) {
+        events += `Dialogue: 0,${formatAssTime(chunkStart)},${formatAssTime(chunkEnd)},ViralStyle,,0,0,0,,${chunk.join(' ').toUpperCase()}\n`;
+      }
+
+      chunkStart = chunkEnd;
+    }
+
+    time += duration;
   }
 
-  return { targetDurationSec: 55, shotCount: 10, shotDuration: 6 };
+  await fs.writeFile(outputPath, header + events, 'utf8');
+
+  if (!events.trim()) {
+    throw new Error('Subtitle generation produced no caption events.');
+  }
 }
 
-function extractAndParseJSON(rawContent: string, niche: string, seriesName: string, shotCount: number, shotDuration: number) {
+async function generateVoiceover(
+  script: string,
+  voice: string,
+  targetDuration: number,
+  cwd: string,
+): Promise<string> {
+  const response = await fetchWithTimeout(
+    'https://edge-tts-api.vercel.app/api/text-to-speech',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: script,
+        voice: voice || 'en-US-JennyNeural',
+      }),
+    },
+    60_000,
+  );
+
+  if (!response.ok) {
+    throw new Error(`Voiceover service failed with HTTP ${response.status}.`);
+  }
+
+  const raw = Buffer.from(await response.arrayBuffer());
+
+  if (raw.length < 1000) {
+    throw new Error('Voiceover service returned an empty or invalid audio file.');
+  }
+
+  const rawPath = path.join(cwd, 'voiceover_raw.mp3');
+  const finalPath = path.join(cwd, 'voiceover.mp3');
+
+  await fs.writeFile(rawPath, raw);
+
+  const rawProbe = await probeMedia(rawPath, cwd);
+
+  if (!hasStream(rawProbe, 'audio')) {
+    throw new Error('The generated voiceover contains no readable audio stream.');
+  }
+
+  const rawDuration = Number(rawProbe?.format?.duration || 0);
+
+  if (!Number.isFinite(rawDuration) || rawDuration <= 0) {
+    throw new Error('Unable to determine the voiceover duration.');
+  }
+
+  // Fit unusually long narration into the video duration without speeding it
+  // up aggressively. Short narration is padded with silence after the speech.
+  const atempo = Math.max(0.75, Math.min(1.35, rawDuration / targetDuration));
+
+  await runFfmpeg(
+    [
+      '-i', rawPath,
+      '-af', `atempo=${atempo.toFixed(4)},apad`,
+      '-t', String(targetDuration),
+      '-ar', '44100',
+      '-ac', '2',
+      '-c:a', 'libmp3lame',
+      '-b:a', '192k',
+      '-y', finalPath,
+    ],
+    cwd,
+  );
+
+  const finalProbe = await probeMedia(finalPath, cwd);
+
+  if (!hasStream(finalProbe, 'audio')) {
+    throw new Error('FFmpeg failed to produce a valid voiceover audio stream.');
+  }
+
+  return finalPath;
+}
+
+async function searchPixabay(
+  type: 'video' | 'image',
+  query: string,
+): Promise<any | null> {
+  if (!PIXABAY_KEY) return null;
+
+  const endpoint = type === 'video'
+    ? 'https://pixabay.com/api/videos/'
+    : 'https://pixabay.com/api/';
+
+  const url = new URL(endpoint);
+  url.searchParams.set('key', PIXABAY_KEY);
+  url.searchParams.set('q', query);
+  url.searchParams.set('safesearch', 'true');
+  url.searchParams.set('per_page', '10');
+  url.searchParams.set('page', String(Math.floor(Math.random() * 3) + 1));
+
+  if (type === 'video') {
+    url.searchParams.set('video_type', 'film');
+  }
+
   try {
-    const parsed = JSON.parse(rawContent);
-    if (parsed.shots && Array.isArray(parsed.shots)) {
-      parsed.shots = parsed.shots.map((s: any, idx: number) => ({
-        ...s,
-        shotNumber: idx + 1,
-        durationSeconds: s.durationSeconds || shotDuration
-      }));
-    }
-    return parsed;
-  } catch (e) {
-    let cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
-    try {
-      const parsed = JSON.parse(cleaned);
-      if (parsed.shots && Array.isArray(parsed.shots)) {
-        parsed.shots = parsed.shots.map((s: any, idx: number) => ({
-          ...s,
-          shotNumber: idx + 1,
-          durationSeconds: s.durationSeconds || shotDuration
-        }));
-      }
-      return parsed;
-    } catch (e2) {
-      const firstBrace = cleaned.indexOf('{');
-      const lastBrace = cleaned.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        try {
-          const parsed = JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
-          if (parsed.shots && Array.isArray(parsed.shots)) {
-            parsed.shots = parsed.shots.map((s: any, idx: number) => ({
-              ...s,
-              shotNumber: idx + 1,
-              durationSeconds: s.durationSeconds || shotDuration
-            }));
-          }
-          return parsed;
-        } catch (e3) {}
-      }
-      
-      const fallbackShots: Shot[] = [];
-      const sampleSentences = [
-        `Welcome to ${seriesName || 'this amazing journey'}.`,
-        `Explore the incredible world of ${niche || 'fascinating topics'} today.`,
-        `Discover stunning facts that will completely blow your mind.`,
-        `Uncovering secrets most people never get to see in their lifetime.`,
-        `From jaw-dropping details to hidden truths that change everything.`,
-        `Everything shifts once you know the real reality behind it.`,
-        `Let's dive straight into the deep core of this incredible story.`,
-        `Where legends, history, and scientific facts collide together.`,
-        `Making you question everything you thought you knew before.`,
-        `Watch until the very end for the most shocking detail!`
-      ];
+    const response = await fetchWithTimeout(url.toString());
 
-      for (let i = 0; i < shotCount; i++) {
-        fallbackShots.push({
-          shotNumber: i + 1,
-          narration: sampleSentences[i % sampleSentences.length],
-          visualPrompt: niche || 'cinematic background',
-          searchKeywords: niche || 'cinematic',
-          durationSeconds: shotDuration
-        });
-      }
+    if (!response.ok) return null;
 
-      return {
-        script: fallbackShots.map(s => s.narration).join(' '),
-        shots: fallbackShots
-      };
-    }
+    const data = await response.json();
+    const hits = Array.isArray(data?.hits) ? data.hits : [];
+
+    if (!hits.length) return null;
+
+    return hits[Math.floor(Math.random() * hits.length)];
+  } catch {
+    return null;
   }
 }
 
-function getSmartKeywords(keywords: string, niche: string = '') {
-  const rawWords = (keywords || niche || 'cinematic background')
-    .replace(/[^\w\s]/g, '')
-    .split(/\s+/)
-    .filter(word => word.length > 2);
-  return rawWords.slice(0, 3).join(' ') || niche || 'cinematic background';
+async function findShotMedia(shot: Shot, niche: string): Promise<Shot> {
+  const query = getSmartKeywords(
+    shot.searchKeywords || shot.visualPrompt,
+    niche,
+  );
+
+  const fallback = getSmartKeywords(niche, 'cinematic documentary');
+
+  let hit = await searchPixabay('video', query);
+
+  if (!hit) hit = await searchPixabay('video', fallback);
+
+  if (hit?.videos) {
+    const videoUrl =
+      hit.videos.medium?.url ||
+      hit.videos.large?.url ||
+      hit.videos.small?.url;
+
+    if (videoUrl) return { ...shot, videoUrl, imageUrl: null };
+  }
+
+  hit = await searchPixabay('image', query);
+
+  if (!hit) hit = await searchPixabay('image', fallback);
+
+  const imageUrl = hit?.largeImageURL || hit?.webformatURL || null;
+
+  return { ...shot, videoUrl: null, imageUrl };
+}
+
+async function createNormalisedClip(
+  shot: Shot,
+  index: number,
+  width: number,
+  height: number,
+  cwd: string,
+): Promise<string> {
+  const outputName = `normalised_${index}.mp4`;
+  const outputPath = path.join(cwd, outputName);
+  const duration = shot.durationSeconds || 6;
+
+  const mediaUrl = shot.videoUrl || shot.imageUrl;
+
+  if (mediaUrl) {
+    try {
+      const imageOrVideo = await fetchBuffer(mediaUrl);
+      const isVideo = Boolean(shot.videoUrl);
+      const inputPath = path.join(cwd, `source_${index}.${isVideo ? 'mp4' : 'jpg'}`);
+
+      await fs.writeFile(inputPath, imageOrVideo);
+
+      if (isVideo) {
+        await runFfmpeg(
+          [
+            '-i', inputPath,
+            '-t', String(duration),
+            '-vf', `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=30,format=yuv420p`,
+            '-an',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '23',
+            '-y', outputPath,
+          ],
+          cwd,
+        );
+      } else {
+        await runFfmpeg(
+          [
+            '-loop', '1',
+            '-framerate', '30',
+            '-i', inputPath,
+            '-t', String(duration),
+            '-vf', `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,zoompan=z='min(zoom+0.001,1.12)':d=${Math.ceil(duration * 30)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}:fps=30,format=yuv420p`,
+            '-an',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '23',
+            '-y', outputPath,
+          ],
+          cwd,
+        );
+      }
+
+      const probe = await probeMedia(outputPath, cwd);
+
+      if (hasStream(probe, 'video')) return outputName;
+    } catch (error) {
+      console.warn(`Shot ${index + 1} media failed; using fallback background.`, error);
+    }
+  }
+
+  // A valid fallback clip ensures the timeline remains complete.
+  await runFfmpeg(
+    [
+      '-f', 'lavfi',
+      '-i', `color=c=0x101827:s=${width}x${height}:r=30`,
+      '-t', String(duration),
+      '-vf', 'format=yuv420p',
+      '-an',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-y', outputPath,
+    ],
+    cwd,
+  );
+
+  return outputName;
+}
+
+function buildConcatList(clips: string[]): string {
+  return clips.map((name) => `file '${name}'`).join('\n') + '\n';
 }
 
 export async function POST(req: Request) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autofrix-autopilot-'));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autofrix-'));
+  let uploadedVideoPath: string | null = null;
+  let uploadedAudioPath: string | null = null;
 
   try {
-    const { seriesName, niche, tone, duration, publishTime, customPrompt, voice, aspectRatio, bgmTrack, captionColor } = await req.json();
-    const openRouterKey = process.env.OPENROUTER_API_KEY;
+    assertConfiguration();
 
-    if (!openRouterKey) {
-      throw new Error('OPENROUTER_API_KEY is missing.');
+    const body = await req.json();
+
+    const seriesName = cleanText(body.seriesName, 200) || 'Viral Story';
+    const niche = cleanText(body.niche, 300) || 'Facts & Curiosities';
+    const tone = cleanText(body.tone, 300) || 'Cinematic and engaging';
+    const duration = cleanText(body.duration, 100) || '30-40 seconds';
+    const customPrompt = cleanText(body.customPrompt, 3000) ||
+      'Create a compelling narrative with a powerful hook.';
+    const voice = cleanText(body.voice, 100) || 'en-US-JennyNeural';
+    const aspectRatio = cleanText(body.aspectRatio, 10) || '9:16';
+    const bgmTrack = cleanText(body.bgmTrack, 50) || 'cinematic';
+    const captionColor = cleanText(body.captionColor, 30) || 'yellow';
+
+    const {
+      targetDurationSec,
+      shotCount,
+      shotDuration,
+    } = parseDurationSettings(duration);
+
+    let width = 1080;
+    let height = 1920;
+
+    if (aspectRatio === '16:9') {
+      width = 1920;
+      height = 1080;
+    } else if (aspectRatio === '1:1') {
+      width = 1080;
+      height = 1080;
     }
 
-    const { targetDurationSec, shotCount, shotDuration } = parseDurationSettings(duration);
-
-    const systemPrompt = `You are an expert short-form viral scriptwriter for TikTok, Reels, and YouTube Shorts.
-Create a high-retention cinematic script and shot list totaling EXACTLY ${shotCount} shots. Each shot must have a durationSeconds of ${shotDuration}.
-Return ONLY valid JSON with no markdown formatting or backticks.
-Structure:
+    // 1. Generate the script and shot list.
+    const systemPrompt = `You are an expert cinematic short-form scriptwriter.
+Create a complete narration and exactly ${shotCount} sequential shots.
+Each shot must contain narration, visualPrompt and searchKeywords.
+Each shot lasts exactly ${shotDuration} seconds.
+The narration in script must equal the combined narration of all shots in the same order.
+Write natural spoken language, with punctuation and no markdown.
+Return ONLY valid JSON:
 {
-  "script": "Full continuous narration script here...",
+  "script": "Complete narration",
   "shots": [
     {
       "shotNumber": 1,
-      "narration": "First sentence spoken in voiceover...",
-      "visualPrompt": "Detailed cinematic visual description...",
-      "searchKeywords": "cinematic action",
+      "narration": "Spoken narration",
+      "visualPrompt": "Detailed visual description",
+      "searchKeywords": "Searchable visual keywords",
       "durationSeconds": ${shotDuration}
     }
   ]
 }`;
 
-    const userPrompt = `Series Name: ${seriesName || 'Viral Story'}
-Niche: ${niche || 'Fun Facts & Curiosities'}
-Tone: ${tone || 'Energetic & Fast-Paced'}
-Target Duration: ${duration || '50-60 seconds'} (~${targetDurationSec} seconds total, exactly ${shotCount} shots)
-Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful hook.'}`;
-
-    const scriptAiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openRouterKey}`,
-        'HTTP-Referer': 'http://localhost:3000',
-        'X-Title': 'Autofrix AI',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'openrouter/free',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ]
-      })
-    });
-
-    const scriptAiData = await scriptAiRes.json();
-    const rawContent = scriptAiData.choices?.[0]?.message?.content || '{}';
-    const parsedScript = extractAndParseJSON(rawContent, niche, seriesName, shotCount, shotDuration);
-
-    let script = parsedScript.script || 'Viral narration story.';
-    let shots: Shot[] = parsedScript.shots || [];
-
-    // Smart Shot-Padding Engine: guarantee exact shot count and duration
-    if (shots.length < shotCount) {
-      const templateShots = [...shots];
-      while (shots.length < shotCount) {
-        const source = templateShots[shots.length % templateShots.length];
-        shots.push({
-          ...source,
-          shotNumber: shots.length + 1,
-          durationSeconds: shotDuration
-        });
-      }
-    } else if (shots.length > shotCount) {
-      shots = shots.slice(0, shotCount);
-    }
-
-    shots = shots.map((s, idx) => ({
-      ...s,
-      shotNumber: idx + 1,
-      durationSeconds: shotDuration
-    }));
-
-    if (shots.length === 0) throw new Error('AI failed to generate valid shot list.');
-
-    // 1. Generate Voiceover Audio via Edge TTS
-    const audioFilename = 'voiceover.mp3';
-    const audioPath = path.join(tmpDir, audioFilename);
-    try {
-      const ttsRes = await fetch('https://edge-tts-api.vercel.app/api/text-to-speech', {
+    const aiResponse = await fetchWithTimeout(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: script, voice: voice || 'en-US-JennyNeural' })
-      });
-      if (ttsRes.ok) {
-        fs.writeFileSync(audioPath, Buffer.from(await ttsRes.arrayBuffer()));
-      } else {
-        await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t ${targetDurationSec} -c:a libmp3lame "${audioFilename}"`, { cwd: tmpDir });
-      }
-    } catch (err) {
-      await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t ${targetDurationSec} -c:a libmp3lame "${audioFilename}"`, { cwd: tmpDir });
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000',
+          'X-Title': 'Autofrix AI',
+        },
+        body: JSON.stringify({
+          model: process.env.OPENROUTER_MODEL || 'openrouter/free',
+          temperature: 0.7,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            {
+              role: 'user',
+              content: `Series: ${seriesName}\nNiche: ${niche}\nTone: ${tone}\nTarget duration: ${targetDurationSec} seconds\nTopic: ${customPrompt}`,
+            },
+          ],
+        }),
+      },
+      60_000,
+    );
+
+    const aiData = await aiResponse.json().catch(() => null);
+
+    if (!aiResponse.ok) {
+      throw new Error(
+        `OpenRouter request failed (${aiResponse.status}): ${
+          cleanText(aiData?.error?.message, 400) || 'Unknown provider error'
+        }`,
+      );
     }
 
-    // 2. Fetch Video Clips via Pixabay with Smart Keywords & Varied Pagination
-    const pixabayKey = process.env.PIXABAY_API_KEY || '';
+    const rawContent = aiData?.choices?.[0]?.message?.content;
+
+    if (typeof rawContent !== 'string' || !rawContent.trim()) {
+      throw new Error('OpenRouter returned an empty script.');
+    }
+
+    const cleanedJson = rawContent
+      .replace(/```json/gi, '')
+      .replace(/```/g, '')
+      .trim();
+
+    let parsed: any;
+
+    try {
+      parsed = JSON.parse(cleanedJson);
+    } catch {
+      const start = cleanedJson.indexOf('{');
+      const end = cleanedJson.lastIndexOf('}');
+
+      if (start < 0 || end <= start) {
+        throw new Error('The AI response was not valid JSON. Please retry.');
+      }
+
+      try {
+        parsed = JSON.parse(cleanedJson.slice(start, end + 1));
+      } catch {
+        throw new Error('Could not parse the AI-generated script.');
+      }
+    }
+
+    const shots = normaliseShots(
+      parsed.shots,
+      shotCount,
+      shotDuration,
+      niche,
+    );
+
+    const script = shots.map((shot) => shot.narration).join(' ');
+
+    if (!script.trim()) {
+      throw new Error('Generated narration is empty.');
+    }
+
+    // 2. Generate and validate real voiceover audio.
+    const audioPath = await generateVoiceover(
+      script,
+      voice,
+      targetDurationSec,
+      tmpDir,
+    );
+
+    // 3. Find stock media for every shot.
     const processedShots: Shot[] = [];
 
-    for (let i = 0; i < shots.length; i++) {
-      const shot = shots[i];
-      let videoUrl: string | null = null;
-      let imageUrl: string | null = null;
-
-      const smartQuery = encodeURIComponent(getSmartKeywords(shot.searchKeywords || shot.visualPrompt, niche));
-      const fallbackQuery = encodeURIComponent(niche || 'cinematic background');
-
-      const fetchPixabay = async (type: 'video' | 'image', query: string, orientation: string = 'vertical') => {
-        const endpoint = type === 'video' ? 'videos/' : '';
-        const randomPage = Math.floor(Math.random() * 3) + 1;
-        const url = `https://pixabay.com/api/${endpoint}?key=${pixabayKey}&q=${query}&safesearch=true&order=popular&orientation=${orientation}&page=${randomPage}&per_page=10`;
-        try {
-          const res = await fetch(url);
-          if (!res.ok) return null;
-          const data = await res.json();
-          if (data.hits && data.hits.length > 0) {
-            const randomIndex = Math.floor(Math.random() * Math.min(data.hits.length, 6));
-            return data.hits[randomIndex];
-          }
-          return null;
-        } catch (e) {
-          return null;
-        }
-      };
-
-      let hit = await fetchPixabay('video', smartQuery, 'vertical');
-      if (!hit) hit = await fetchPixabay('video', smartQuery, 'all');
-      if (!hit) hit = await fetchPixabay('video', fallbackQuery, 'vertical');
-
-      if (hit && hit.videos) {
-        videoUrl = hit.videos.medium?.url || hit.videos.large?.url || hit.videos.small?.url || '';
-      } else {
-        hit = await fetchPixabay('image', smartQuery, 'vertical');
-        if (!hit) hit = await fetchPixabay('image', smartQuery, 'all');
-        if (!hit) hit = await fetchPixabay('image', fallbackQuery, 'vertical');
-        if (hit) {
-          imageUrl = hit.largeImageURL || hit.webformatURL || '';
-        }
-      }
-
-      processedShots.push({
-        ...shot,
-        videoUrl: videoUrl || null,
-        imageUrl: imageUrl || null,
-        durationSeconds: shot.durationSeconds || shotDuration
-      });
-    }
-
-    // 3. Stitch Video with FFmpeg in Parallel using cwd: tmpDir
-    let targetWidth = 1080;
-    let targetHeight = 1920;
-    if (aspectRatio === '16:9') { targetWidth = 1920; targetHeight = 1080; }
-    else if (aspectRatio === '1:1') { targetWidth = 1080; targetHeight = 1080; }
-
-    const clipPromises = processedShots.map(async (shot: Shot, i: number) => {
-      const mediaUrl = shot.videoUrl || shot.imageUrl;
-      const clipDuration = shot.durationSeconds || shotDuration;
-      const isVideo = Boolean(shot.videoUrl);
-      const clipFilename = `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`;
-      const normFilename = `norm_${i}.mp4`;
-      const clipPath = path.join(tmpDir, clipFilename);
-
-      if (mediaUrl) {
-        try {
-          const res = await fetch(mediaUrl);
-          if (res.ok) {
-            fs.writeFileSync(clipPath, Buffer.from(await res.arrayBuffer()));
-            if (isVideo) {
-              await execPromise(
-                `"${ffmpegPath}" -y -i "${clipFilename}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normFilename}"`,
-                { cwd: tmpDir }
-              );
-            } else {
-              const totalFrames = clipDuration * 30;
-              const sourceCanvasSize = Math.max(targetWidth, targetHeight) * 2;
-              await execPromise(
-                `"${ffmpegPath}" -y -loop 1 -i "${clipFilename}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normFilename}"`,
-                { cwd: tmpDir }
-              );
-            }
-            return normFilename;
-          }
-        } catch (err) {}
-      }
-
-      await execPromise(
-        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normFilename}"`,
-        { cwd: tmpDir }
+    // Limit parallel downloads/searches to reduce API and memory pressure.
+    for (let i = 0; i < shots.length; i += 3) {
+      const group = shots.slice(i, i + 3);
+      const results = await Promise.all(
+        group.map((shot) => findShotMedia(shot, niche)),
       );
-      return normFilename;
-    });
 
-    const downloadedClips = await Promise.all(clipPromises);
-
-    // 4. Randomized BGM Selection
-    let bgmFilename = '';
-    const moodTracks = BGM_LIBRARY[bgmTrack] || BGM_LIBRARY['cinematic'];
-    const randomBgmUrl = moodTracks[Math.floor(Math.random() * moodTracks.length)];
-    try {
-      const bgmRes = await fetch(randomBgmUrl);
-      if (bgmRes.ok) {
-        bgmFilename = 'bgm.mp3';
-        fs.writeFileSync(path.join(tmpDir, bgmFilename), Buffer.from(await bgmRes.arrayBuffer()));
-      }
-    } catch (err) {}
-
-    const listFilename = 'files.txt';
-    fs.writeFileSync(path.join(tmpDir, listFilename), downloadedClips.map((p) => `file '${p}'`).join('\n'), 'utf8');
-
-    const subtitleFilename = 'subtitles.ass';
-    generateAssSubtitleFile(processedShots, path.join(tmpDir, subtitleFilename), targetWidth, targetHeight, captionColor || 'yellow');
-
-    const outputFileName = `autopilot_${Date.now()}.mp4`;
-
-    let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listFilename}"`;
-    if (fs.existsSync(audioPath) && bgmFilename) {
-      ffmpegCmd += ` -i "${audioFilename}" -i "${bgmFilename}" -filter_complex "[0:v]ass=${subtitleFilename}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputFileName}"`;
-    } else if (fs.existsSync(audioPath)) {
-      ffmpegCmd += ` -i "${audioFilename}" -vf "ass=${subtitleFilename}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputFileName}"`;
-    } else {
-      ffmpegCmd += ` -vf "ass=${subtitleFilename}" -c:v libx264 -preset veryfast "${outputFileName}"`;
+      processedShots.push(...results);
     }
 
-    await execPromise(ffmpegCmd, { cwd: tmpDir });
+    // 4. Normalise all clips to the same resolution and frame rate.
+    const clipNames: string[] = [];
 
-    const videoBuffer = fs.readFileSync(path.join(tmpDir, outputFileName));
-    const { error: uploadError } = await supabase.storage.from('videos').upload(outputFileName, videoBuffer, {
-      contentType: 'video/mp4',
-      upsert: true,
-    });
+    for (let i = 0; i < processedShots.length; i++) {
+      const clipName = await createNormalisedClip(
+        processedShots[i],
+        i,
+        width,
+        height,
+        tmpDir,
+      );
 
-    if (uploadError) throw new Error(`Supabase upload failed: ${uploadError.message}`);
+      clipNames.push(clipName);
+    }
 
-    const { data: publicUrlData } = supabase.storage.from('videos').getPublicUrl(outputFileName);
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // 5. Create subtitle file and concatenate the clips.
+    const subtitlePath = path.join(tmpDir, 'subtitles.ass');
+
+    await createSubtitles(
+      processedShots,
+      subtitlePath,
+      width,
+      height,
+      captionColor,
+    );
+
+    const concatPath = path.join(tmpDir, 'files.txt');
+    await fs.writeFile(concatPath, buildConcatList(clipNames), 'utf8');
+
+    const silentVideoPath = path.join(tmpDir, 'silent_video.mp4');
+
+    await runFfmpeg(
+      [
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', concatPath,
+        '-an',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-y', silentVideoPath,
+      ],
+      tmpDir,
+    );
+
+    // 6. Burn subtitles into the video before audio mixing.
+    const captionedVideoPath = path.join(tmpDir, 'captioned_video.mp4');
+
+    await runFfmpeg(
+      [
+        '-i', silentVideoPath,
+        '-vf', 'ass=subtitles.ass',
+        '-an',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-y', captionedVideoPath,
+      ],
+      tmpDir,
+    );
+
+    // 7. Download optional background music.
+    let bgmPath: string | null = null;
+    const tracks = BGM_LIBRARY[bgmTrack] || BGM_LIBRARY.cinematic;
+    const selectedTrack = tracks[Math.floor(Math.random() * tracks.length)];
+
+    try {
+      const bgmBuffer = await fetchBuffer(selectedTrack, 25 * 1024 * 1024);
+      const candidatePath = path.join(tmpDir, 'background_music.mp3');
+
+      await fs.writeFile(candidatePath, bgmBuffer);
+
+      const probe = await probeMedia(candidatePath, tmpDir);
+
+      if (hasStream(probe, 'audio')) {
+        bgmPath = candidatePath;
+      }
+    } catch (error) {
+      console.warn('Background music unavailable; continuing with voiceover only.', error);
+    }
+
+    // 8. Explicitly map the voiceover and mix optional background music.
+    const outputPath = path.join(tmpDir, 'final_video.mp4');
+
+    const finalArgs = [
+      '-i', captionedVideoPath,
+      '-i', audioPath,
+    ];
+
+    if (bgmPath) {
+      finalArgs.push(
+        '-stream_loop', '-1',
+        '-i', bgmPath,
+        '-filter_complex',
+        '[1:a]aresample=44100,volume=1.0[voice];[2:a]aresample=44100,volume=0.12[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95[aout]',
+      );
+    } else {
+      finalArgs.push(
+        '-filter_complex',
+        '[1:a]aresample=44100,volume=1.0[aout]',
+      );
+    }
+
+    finalArgs.push(
+      '-map', '0:v:0',
+      '-map', '[aout]',
+      '-t', String(targetDurationSec),
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-ar', '44100',
+      '-movflags', '+faststart',
+      '-shortest',
+      '-y', outputPath,
+    );
+
+    await runFfmpeg(finalArgs, tmpDir);
+
+    // 9. Verify the actual final file before uploading.
+    const finalProbe = await probeMedia(outputPath, tmpDir);
+
+    if (!hasStream(finalProbe, 'video')) {
+      throw new Error('Final render is missing its video stream.');
+    }
+
+    if (!hasStream(finalProbe, 'audio')) {
+      throw new Error('Final render is missing its audio stream.');
+    }
+
+    const subtitleContent = await fs.readFile(subtitlePath, 'utf8');
+
+    if (!subtitleContent.includes('Dialogue:')) {
+      throw new Error('Final render has no subtitle events to display.');
+    }
+
+    const videoBuffer = await fs.readFile(outputPath);
+    const audioBuffer = await fs.readFile(audioPath);
+
+    if (videoBuffer.length < 10_000) {
+      throw new Error('Final video file is unexpectedly small.');
+    }
+
+    // 10. Upload the MP4 and voiceover separately.
+    const outputId = randomUUID();
+    uploadedVideoPath = `autopilot/${outputId}.mp4`;
+    uploadedAudioPath = `voiceovers/${outputId}.mp3`;
+
+    const { error: videoUploadError } = await supabase!
+      .storage
+      .from('videos')
+      .upload(uploadedVideoPath, videoBuffer, {
+        contentType: 'video/mp4',
+        upsert: false,
+      });
+
+    if (videoUploadError) {
+      throw new Error(`Video upload failed: ${videoUploadError.message}`);
+    }
+
+    const { error: audioUploadError } = await supabase!
+      .storage
+      .from('videos')
+      .upload(uploadedAudioPath, audioBuffer, {
+        contentType: 'audio/mpeg',
+        upsert: false,
+      });
+
+    if (audioUploadError) {
+      // Avoid leaving an orphaned video when the companion audio upload fails.
+      await supabase!.storage.from('videos').remove([uploadedVideoPath]);
+      uploadedVideoPath = null;
+
+      throw new Error(`Voiceover upload failed: ${audioUploadError.message}`);
+    }
+
+    const { data: videoUrlData } = supabase!
+      .storage
+      .from('videos')
+      .getPublicUrl(uploadedVideoPath);
+
+    const { data: audioUrlData } = supabase!
+      .storage
+      .from('videos')
+      .getPublicUrl(uploadedAudioPath);
 
     return NextResponse.json({
-      url: publicUrlData.publicUrl,
+      url: videoUrlData.publicUrl,
+      audioUrl: audioUrlData.publicUrl,
       script,
       shots: processedShots,
-      audioUrl: publicUrlData.publicUrl
+      durationSeconds: targetDurationSec,
+      hasAudio: true,
+      hasSubtitles: true,
     });
   } catch (error: any) {
-    console.error('Auto-Pilot Error:', error);
-    if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
-    return NextResponse.json({ error: error?.message || 'Auto-pilot pipeline failed.' }, { status: 500 });
+    console.error('Autofrix Auto-Pilot Error:', error);
+
+    if (uploadedVideoPath && supabase) {
+      await supabase.storage.from('videos').remove([uploadedVideoPath]).catch(() => {});
+    }
+
+    if (uploadedAudioPath && supabase) {
+      await supabase.storage.from('videos').remove([uploadedAudioPath]).catch(() => {});
+    }
+
+    return NextResponse.json(
+      {
+        error: cleanText(error?.message, 1000) || 'Auto-pilot pipeline failed.',
+      },
+      { status: 500 },
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
+
