@@ -143,14 +143,19 @@ function extractAndParseJSON(rawContent: string, niche: string, seriesName: stri
           return JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
         } catch (e3) {}
       }
-      // Bulletproof fallback so autoplay never fails
       return {
-        script: `Welcome to ${seriesName || 'this incredible journey'}. Discover the fascinating world of ${niche || 'amazing facts'} that will blow your mind. Watch until the end to see the most shocking details!`,
+        script: `Welcome to ${seriesName || 'this amazing journey'}. Explore the incredible world of ${niche || 'fascinating topics'} with us today. Watch until the end for shocking details!`,
         shots: [
-          { shotNumber: 1, narration: `Welcome to ${seriesName || 'this incredible journey'}.`, visualPrompt: niche || 'cinematic background', searchKeywords: niche || 'cinematic', durationSeconds: 6 },
-          { shotNumber: 2, narration: `Discover the fascinating world of ${niche || 'amazing facts'}.`, visualPrompt: niche || 'epic view', searchKeywords: niche || 'epic', durationSeconds: 6 },
-          { shotNumber: 3, narration: `That will completely blow your mind today.`, visualPrompt: 'stunning visual abstract', searchKeywords: 'abstract', durationSeconds: 6 },
-          { shotNumber: 4, narration: `Watch until the end to see the most shocking details!`, visualPrompt: 'cinematic closing shot', searchKeywords: 'cinematic', durationSeconds: 7 }
+          { shotNumber: 1, narration: `Welcome to ${seriesName || 'this amazing journey'}.`, visualPrompt: niche || 'cinematic background', searchKeywords: niche || 'cinematic', durationSeconds: 6 },
+          { shotNumber: 2, narration: `Explore the incredible world of ${niche || 'fascinating topics'}.`, visualPrompt: 'epic view', searchKeywords: 'epic', durationSeconds: 6 },
+          { shotNumber: 3, narration: `Discover stunning facts that will blow your mind.`, visualPrompt: 'stunning abstract', searchKeywords: 'abstract', durationSeconds: 6 },
+          { shotNumber: 4, narration: `Uncovering secrets most people never get to see.`, visualPrompt: 'mysterious cinematic', searchKeywords: 'mysterious', durationSeconds: 6 },
+          { shotNumber: 5, narration: `From jaw-dropping details to hidden truths.`, visualPrompt: 'detailed cinematic', searchKeywords: 'details', durationSeconds: 6 },
+          { shotNumber: 6, narration: `Everything changes once you know the reality.`, visualPrompt: 'dramatic shot', searchKeywords: 'dramatic', durationSeconds: 6 },
+          { shotNumber: 7, narration: `Let's dive straight into the core of the story.`, visualPrompt: 'action shot', searchKeywords: 'action', durationSeconds: 6 },
+          { shotNumber: 8, narration: `Where legends and facts collide together.`, visualPrompt: 'epic landscape', searchKeywords: 'landscape', durationSeconds: 6 },
+          { shotNumber: 9, narration: `Making you question everything you thought you knew.`, visualPrompt: 'surprising visual', searchKeywords: 'surprising', durationSeconds: 6 },
+          { shotNumber: 10, narration: `Like and subscribe for more mind-blowing episodes!`, visualPrompt: 'closing cinematic', searchKeywords: 'closing', durationSeconds: 6 }
         ]
       };
     }
@@ -162,7 +167,7 @@ function getSmartKeywords(keywords: string, niche: string = '') {
     .replace(/[^\w\s]/g, '')
     .split(/\s+/)
     .filter(word => word.length > 2);
-  return rawWords.slice(0, 3).join(' ') || niche || 'cinematic abstract';
+  return rawWords.slice(0, 3).join(' ') || niche || 'cinematic background';
 }
 
 export async function POST(req: Request) {
@@ -176,8 +181,13 @@ export async function POST(req: Request) {
       throw new Error('OPENROUTER_API_KEY is missing.');
     }
 
+    let targetDurationSec = 55;
+    let shotCount = 10;
+    if (duration && duration.includes('30-40')) { targetDurationSec = 35; shotCount = 6; }
+    else if (duration && duration.includes('15-20')) { targetDurationSec = 18; shotCount = 3; }
+
     const systemPrompt = `You are an expert short-form viral scriptwriter for TikTok, Reels, and YouTube Shorts.
-Create a high-retention cinematic script and shot list.
+Create a high-retention cinematic script and shot list totaling exactly ${shotCount} shots, with each shot taking about 5 to 6 seconds (total ~${targetDurationSec} seconds).
 Return ONLY valid JSON with no markdown formatting or backticks.
 Structure:
 {
@@ -187,16 +197,16 @@ Structure:
       "shotNumber": 1,
       "narration": "First sentence spoken in voiceover...",
       "visualPrompt": "Detailed cinematic visual description...",
-      "searchKeywords": "electric car",
+      "searchKeywords": "electric bike",
       "durationSeconds": 6
     }
   ]
 }`;
 
     const userPrompt = `Series Name: ${seriesName || 'Viral Story'}
-Niche: ${niche || 'True Crime & Mystery'}
-Tone: ${tone || 'Dramatic, Suspenseful & Intense'}
-Target Duration: ${duration || '30-40 seconds (Standard Reel)'}
+Niche: ${niche || 'Fun Facts & Curiosities'}
+Tone: ${tone || 'Energetic & Fast-Paced'}
+Target Duration: ${duration || '50-60 seconds (Long Reel)'}
 Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful hook.'}`;
 
     const scriptAiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -225,7 +235,8 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
     if (shots.length === 0) throw new Error('AI failed to generate valid shot list.');
 
     // 1. Generate Voiceover Audio via Edge TTS
-    const audioPath = path.join(tmpDir, 'voiceover.mp3');
+    const audioFilename = 'voiceover.mp3';
+    const audioPath = path.join(tmpDir, audioFilename);
     try {
       const ttsRes = await fetch('https://edge-tts-api.vercel.app/api/text-to-speech', {
         method: 'POST',
@@ -235,10 +246,10 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
       if (ttsRes.ok) {
         fs.writeFileSync(audioPath, Buffer.from(await ttsRes.arrayBuffer()));
       } else {
-        await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t 25 -c:a libmp3lame "${audioPath}"`);
+        await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t ${targetDurationSec} -c:a libmp3lame "${audioFilename}"`, { cwd: tmpDir });
       }
     } catch (err) {
-      await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t 25 -c:a libmp3lame "${audioPath}"`);
+      await execPromise(`"${ffmpegPath}" -y -f lavfi -i anullsrc=r=44100:cl=mono -t ${targetDurationSec} -c:a libmp3lame "${audioFilename}"`, { cwd: tmpDir });
     }
 
     // 2. Fetch Video Clips via Pixabay with Smart Keywords & Varied Pagination
@@ -289,11 +300,12 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
       processedShots.push({
         ...shot,
         videoUrl: videoUrl || null,
-        imageUrl: imageUrl || null
+        imageUrl: imageUrl || null,
+        durationSeconds: shot.durationSeconds || 6
       });
     }
 
-    // 3. Stitch Video with FFmpeg in Parallel
+    // 3. Stitch Video with FFmpeg in Parallel using cwd: tmpDir
     let targetWidth = 1080;
     let targetHeight = 1920;
     if (aspectRatio === '16:9') { targetWidth = 1920; targetHeight = 1080; }
@@ -301,10 +313,11 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
 
     const clipPromises = processedShots.map(async (shot: Shot, i: number) => {
       const mediaUrl = shot.videoUrl || shot.imageUrl;
-      const clipDuration = shot.durationSeconds || 5;
+      const clipDuration = shot.durationSeconds || 6;
       const isVideo = Boolean(shot.videoUrl);
-      const clipPath = path.join(tmpDir, `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`);
-      const normPath = path.join(tmpDir, `norm_${i}.mp4`);
+      const clipFilename = `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`;
+      const normFilename = `norm_${i}.mp4`;
+      const clipPath = path.join(tmpDir, clipFilename);
 
       if (mediaUrl) {
         try {
@@ -313,62 +326,63 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
             fs.writeFileSync(clipPath, Buffer.from(await res.arrayBuffer()));
             if (isVideo) {
               await execPromise(
-                `"${ffmpegPath}" -y -i "${clipPath}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
+                `"${ffmpegPath}" -y -i "${clipFilename}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normFilename}"`,
+                { cwd: tmpDir }
               );
             } else {
               const totalFrames = clipDuration * 30;
               const sourceCanvasSize = Math.max(targetWidth, targetHeight) * 2;
               await execPromise(
-                `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+                `"${ffmpegPath}" -y -loop 1 -i "${clipFilename}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normFilename}"`,
+                { cwd: tmpDir }
               );
             }
-            return normPath;
+            return normFilename;
           }
         } catch (err) {}
       }
 
       await execPromise(
-        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normFilename}"`,
+        { cwd: tmpDir }
       );
-      return normPath;
+      return normFilename;
     });
 
     const downloadedClips = await Promise.all(clipPromises);
 
     // 4. Randomized BGM Selection
-    let bgmPath = '';
+    let bgmFilename = '';
     const moodTracks = BGM_LIBRARY[bgmTrack] || BGM_LIBRARY['cinematic'];
     const randomBgmUrl = moodTracks[Math.floor(Math.random() * moodTracks.length)];
     try {
       const bgmRes = await fetch(randomBgmUrl);
       if (bgmRes.ok) {
-        bgmPath = path.join(tmpDir, 'bgm.mp3');
-        fs.writeFileSync(bgmPath, Buffer.from(await bgmRes.arrayBuffer()));
+        bgmFilename = 'bgm.mp3';
+        fs.writeFileSync(path.join(tmpDir, bgmFilename), Buffer.from(await bgmRes.arrayBuffer()));
       }
     } catch (err) {}
 
-    const listPath = path.join(tmpDir, 'files.txt');
-    fs.writeFileSync(listPath, downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+    const listFilename = 'files.txt';
+    fs.writeFileSync(path.join(tmpDir, listFilename), downloadedClips.map((p) => `file '${p}'`).join('\n'), 'utf8');
 
-    const assPath = path.resolve(path.join(tmpDir, 'subtitles.ass'));
-    generateAssSubtitleFile(processedShots, assPath, targetWidth, targetHeight, captionColor || 'yellow');
+    const subtitleFilename = 'subtitles.ass';
+    generateAssSubtitleFile(processedShots, path.join(tmpDir, subtitleFilename), targetWidth, targetHeight, captionColor || 'yellow');
 
     const outputFileName = `autopilot_${Date.now()}.mp4`;
-    const outputPath = path.join(tmpDir, outputFileName);
-    const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
-    let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
-    if (fs.existsSync(audioPath) && bgmPath) {
-      ffmpegCmd += ` -i "${audioPath}" -i "${bgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
+    let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listFilename}"`;
+    if (fs.existsSync(audioPath) && bgmFilename) {
+      ffmpegCmd += ` -i "${audioFilename}" -i "${bgmFilename}" -filter_complex "[0:v]ass=${subtitleFilename}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputFileName}"`;
     } else if (fs.existsSync(audioPath)) {
-      ffmpegCmd += ` -i "${audioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
+      ffmpegCmd += ` -i "${audioFilename}" -vf "ass=${subtitleFilename}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputFileName}"`;
     } else {
-      ffmpegCmd += ` -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast "${outputPath}"`;
+      ffmpegCmd += ` -vf "ass=${subtitleFilename}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast "${outputFileName}"`;
     }
 
-    await execPromise(ffmpegCmd);
+    await execPromise(ffmpegCmd, { cwd: tmpDir });
 
-    const videoBuffer = fs.readFileSync(outputPath);
+    const videoBuffer = fs.readFileSync(path.join(tmpDir, outputFileName));
     const { error: uploadError } = await supabase.storage.from('videos').upload(outputFileName, videoBuffer, {
       contentType: 'video/mp4',
       upsert: true,

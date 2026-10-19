@@ -148,8 +148,10 @@ export async function POST(req: Request) {
       const mediaUrl = shot.videoUrl || shot.url || shot.imageUrl;
       const clipDuration = shot.durationSeconds || 5;
       const isVideo = Boolean(shot.videoUrl || (shot.url && shot.url.includes('.mp4')));
-      const clipPath = path.join(tmpDir, `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`);
-      const normPath = path.join(tmpDir, `norm_${i}.mp4`);
+      const clipFilename = `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`;
+      const normFilename = `norm_${i}.mp4`;
+      const clipPath = path.join(tmpDir, clipFilename);
+      const normPath = path.join(tmpDir, normFilename);
 
       if (mediaUrl) {
         try {
@@ -158,72 +160,73 @@ export async function POST(req: Request) {
             fs.writeFileSync(clipPath, Buffer.from(await res.arrayBuffer()));
             if (isVideo) {
               await execPromise(
-                `"${ffmpegPath}" -y -i "${clipPath}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normPath}"`
+                `"${ffmpegPath}" -y -i "${clipFilename}" -t ${clipDuration} -vf "scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},fps=30" -c:v libx264 -preset ultrafast -an "${normFilename}"`,
+                { cwd: tmpDir }
               );
             } else {
               const totalFrames = clipDuration * 30;
               const sourceCanvasSize = Math.max(targetWidth, targetHeight) * 2;
               await execPromise(
-                `"${ffmpegPath}" -y -loop 1 -i "${clipPath}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+                `"${ffmpegPath}" -y -loop 1 -i "${clipFilename}" -vf "scale=${sourceCanvasSize}:${sourceCanvasSize}:force_original_aspect_ratio=decrease,zoompan=z='min(zoom+0.0012,1.3)':d=${totalFrames}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2':s=${targetWidth}x${targetHeight},fps=30" -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normFilename}"`,
+                { cwd: tmpDir }
               );
             }
-            return normPath;
+            return normFilename;
           }
         } catch (err) {}
       }
 
       await execPromise(
-        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normPath}"`
+        `"${ffmpegPath}" -y -f lavfi -i color=c=0x0f172a:s=${targetWidth}x${targetHeight}:r=30 -t ${clipDuration} -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${normFilename}"`,
+        { cwd: tmpDir }
       );
-      return normPath;
+      return normFilename;
     });
 
     const downloadedClips = await Promise.all(clipPromises);
 
-    let localAudioPath = '';
+    let localAudioFile = '';
     if (audioUrl) {
       try {
         const audioRes = await fetch(audioUrl);
         if (audioRes.ok) {
-          localAudioPath = path.join(tmpDir, 'voiceover.mp3');
-          fs.writeFileSync(localAudioPath, Buffer.from(await audioRes.arrayBuffer()));
+          localAudioFile = 'voiceover.mp3';
+          fs.writeFileSync(path.join(tmpDir, localAudioFile), Buffer.from(await audioRes.arrayBuffer()));
         }
       } catch (err) {}
     }
 
-    let localBgmPath = '';
+    let localBgmFile = '';
     const moodTracks = BGM_LIBRARY[bgmTrack] || BGM_LIBRARY['cinematic'];
     const randomBgmUrl = moodTracks[Math.floor(Math.random() * moodTracks.length)];
     try {
       const bgmRes = await fetch(randomBgmUrl);
       if (bgmRes.ok) {
-        localBgmPath = path.join(tmpDir, 'bgm.mp3');
-        fs.writeFileSync(localBgmPath, Buffer.from(await bgmRes.arrayBuffer()));
+        localBgmFile = 'bgm.mp3';
+        fs.writeFileSync(path.join(tmpDir, localBgmFile), Buffer.from(await bgmRes.arrayBuffer()));
       }
     } catch (err) {}
 
-    const listPath = path.join(tmpDir, 'files.txt');
-    fs.writeFileSync(listPath, downloadedClips.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+    const listFilename = 'files.txt';
+    fs.writeFileSync(path.join(tmpDir, listFilename), downloadedClips.map((p) => `file '${p}'`).join('\n'), 'utf8');
 
-    const assPath = path.resolve(path.join(tmpDir, 'subtitles.ass'));
-    generateAssSubtitleFile(shots, assPath, targetWidth, targetHeight, captionColor || 'yellow');
+    const subtitleFilename = 'subtitles.ass';
+    generateAssSubtitleFile(shots, path.join(tmpDir, subtitleFilename), targetWidth, targetHeight, captionColor || 'yellow');
 
     const outputFileName = `stitched_${Date.now()}.mp4`;
-    const outputPath = path.join(tmpDir, outputFileName);
-    const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
 
-    let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listPath}"`;
-    if (localAudioPath && localBgmPath) {
-      ffmpegCmd += ` -i "${localAudioPath}" -i "${localBgmPath}" -filter_complex "[0:v]ass=${escapedAssPath}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
-    } else if (localAudioPath) {
-      ffmpegCmd += ` -i "${localAudioPath}" -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputPath}"`;
+    let ffmpegCmd = `"${ffmpegPath}" -y -f concat -safe 0 -i "${listFilename}"`;
+    if (localAudioFile && localBgmFile) {
+      ffmpegCmd += ` -i "${localAudioFile}" -i "${localBgmFile}" -filter_complex "[0:v]ass=${subtitleFilename}[vout];[1:a]volume=1.0[voice];[2:a]volume=0.10[bgm];[voice][bgm]amix=inputs=2:duration=first[aout]" -map "[vout]" -map "[aout]" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputFileName}"`;
+    } else if (localAudioFile) {
+      ffmpegCmd += ` -i "${localAudioFile}" -vf "ass=${subtitleFilename}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputFileName}"`;
     } else {
-      ffmpegCmd += ` -vf "ass=${escapedAssPath}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast "${outputPath}"`;
+      ffmpegCmd += ` -vf "ass=${subtitleFilename}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast "${outputFileName}"`;
     }
 
-    await execPromise(ffmpegCmd);
+    await execPromise(ffmpegCmd, { cwd: tmpDir });
 
-    const videoBuffer = fs.readFileSync(outputPath);
+    const videoBuffer = fs.readFileSync(path.join(tmpDir, outputFileName));
     const { error: uploadError } = await supabase.storage.from('videos').upload(outputFileName, videoBuffer, {
       contentType: 'video/mp4',
       upsert: true,
