@@ -93,7 +93,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   let currentTime = 0;
 
   shots.forEach((shot) => {
-    const shotDuration = shot.durationSeconds || 5;
+    const shotDuration = shot.durationSeconds || 6;
     const narration = (shot.narration || '').trim();
 
     if (narration) {
@@ -128,35 +128,105 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   fs.writeFileSync(filePath, header + dialogues, 'utf8');
 }
 
-function extractAndParseJSON(rawContent: string, niche: string, seriesName: string) {
+function parseDurationSettings(durationStr: string) {
+  const lower = (durationStr || '').toLowerCase();
+  
+  if (lower.includes('4-5') || lower.includes('4 to 5') || lower.includes('5 min')) {
+    return { targetDurationSec: 270, shotCount: 45, shotDuration: 6 };
+  } else if (lower.includes('3-4') || lower.includes('3 to 4') || lower.includes('4 min')) {
+    return { targetDurationSec: 210, shotCount: 35, shotDuration: 6 };
+  } else if (lower.includes('2-3') || lower.includes('2 to 3') || lower.includes('3 min')) {
+    return { targetDurationSec: 150, shotCount: 25, shotDuration: 6 };
+  } else if (lower.includes('1-2') || lower.includes('1 to 2') || lower.includes('2 min')) {
+    return { targetDurationSec: 90, shotCount: 15, shotDuration: 6 };
+  } else if (lower.includes('15') || lower.includes('20')) {
+    return { targetDurationSec: 18, shotCount: 3, shotDuration: 6 };
+  } else if (lower.includes('30') || lower.includes('40')) {
+    return { targetDurationSec: 36, shotCount: 6, shotDuration: 6 };
+  } else if (lower.includes('50') || lower.includes('60')) {
+    return { targetDurationSec: 55, shotCount: 10, shotDuration: 6 };
+  }
+
+  if (lower.includes('min')) {
+    const numbers = lower.match(/\d+/g);
+    if (numbers && numbers.length > 0) {
+      const minutes = parseInt(numbers[0]);
+      const targetSecs = minutes * 60;
+      const shots = Math.max(5, Math.round(targetSecs / 6));
+      return { targetDurationSec: targetSecs, shotCount: shots, shotDuration: 6 };
+    }
+  }
+
+  return { targetDurationSec: 55, shotCount: 10, shotDuration: 6 };
+}
+
+function extractAndParseJSON(rawContent: string, niche: string, seriesName: string, shotCount: number, shotDuration: number) {
   try {
-    return JSON.parse(rawContent);
+    const parsed = JSON.parse(rawContent);
+    if (parsed.shots && Array.isArray(parsed.shots)) {
+      parsed.shots = parsed.shots.map((s: any, idx: number) => ({
+        ...s,
+        shotNumber: idx + 1,
+        durationSeconds: s.durationSeconds || shotDuration
+      }));
+    }
+    return parsed;
   } catch (e) {
     let cleaned = rawContent.replace(/```json/gi, '').replace(/```/g, '').trim();
     try {
-      return JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
+      if (parsed.shots && Array.isArray(parsed.shots)) {
+        parsed.shots = parsed.shots.map((s: any, idx: number) => ({
+          ...s,
+          shotNumber: idx + 1,
+          durationSeconds: s.durationSeconds || shotDuration
+        }));
+      }
+      return parsed;
     } catch (e2) {
       const firstBrace = cleaned.indexOf('{');
       const lastBrace = cleaned.lastIndexOf('}');
       if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
         try {
-          return JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
+          const parsed = JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
+          if (parsed.shots && Array.isArray(parsed.shots)) {
+            parsed.shots = parsed.shots.map((s: any, idx: number) => ({
+              ...s,
+              shotNumber: idx + 1,
+              durationSeconds: s.durationSeconds || shotDuration
+            }));
+          }
+          return parsed;
         } catch (e3) {}
       }
+      
+      const fallbackShots: Shot[] = [];
+      const sampleSentences = [
+        `Welcome to ${seriesName || 'this amazing journey'}.`,
+        `Explore the incredible world of ${niche || 'fascinating topics'} today.`,
+        `Discover stunning facts that will completely blow your mind.`,
+        `Uncovering secrets most people never get to see in their lifetime.`,
+        `From jaw-dropping details to hidden truths that change everything.`,
+        `Everything shifts once you know the real reality behind it.`,
+        `Let's dive straight into the deep core of this incredible story.`,
+        `Where legends, history, and scientific facts collide together.`,
+        `Making you question everything you thought you knew before.`,
+        `Watch until the very end for the most shocking detail!`
+      ];
+
+      for (let i = 0; i < shotCount; i++) {
+        fallbackShots.push({
+          shotNumber: i + 1,
+          narration: sampleSentences[i % sampleSentences.length],
+          visualPrompt: niche || 'cinematic background',
+          searchKeywords: niche || 'cinematic',
+          durationSeconds: shotDuration
+        });
+      }
+
       return {
-        script: `Welcome to ${seriesName || 'this amazing journey'}. Explore the incredible world of ${niche || 'fascinating topics'} with us today. Watch until the end for shocking details!`,
-        shots: [
-          { shotNumber: 1, narration: `Welcome to ${seriesName || 'this amazing journey'}.`, visualPrompt: niche || 'cinematic background', searchKeywords: niche || 'cinematic', durationSeconds: 6 },
-          { shotNumber: 2, narration: `Explore the incredible world of ${niche || 'fascinating topics'}.`, visualPrompt: 'epic view', searchKeywords: 'epic', durationSeconds: 6 },
-          { shotNumber: 3, narration: `Discover stunning facts that will blow your mind.`, visualPrompt: 'stunning abstract', searchKeywords: 'abstract', durationSeconds: 6 },
-          { shotNumber: 4, narration: `Uncovering secrets most people never get to see.`, visualPrompt: 'mysterious cinematic', searchKeywords: 'mysterious', durationSeconds: 6 },
-          { shotNumber: 5, narration: `From jaw-dropping details to hidden truths.`, visualPrompt: 'detailed cinematic', searchKeywords: 'details', durationSeconds: 6 },
-          { shotNumber: 6, narration: `Everything changes once you know the reality.`, visualPrompt: 'dramatic shot', searchKeywords: 'dramatic', durationSeconds: 6 },
-          { shotNumber: 7, narration: `Let's dive straight into the core of the story.`, visualPrompt: 'action shot', searchKeywords: 'action', durationSeconds: 6 },
-          { shotNumber: 8, narration: `Where legends and facts collide together.`, visualPrompt: 'epic landscape', searchKeywords: 'landscape', durationSeconds: 6 },
-          { shotNumber: 9, narration: `Making you question everything you thought you knew.`, visualPrompt: 'surprising visual', searchKeywords: 'surprising', durationSeconds: 6 },
-          { shotNumber: 10, narration: `Like and subscribe for more mind-blowing episodes!`, visualPrompt: 'closing cinematic', searchKeywords: 'closing', durationSeconds: 6 }
-        ]
+        script: fallbackShots.map(s => s.narration).join(' '),
+        shots: fallbackShots
       };
     }
   }
@@ -181,13 +251,10 @@ export async function POST(req: Request) {
       throw new Error('OPENROUTER_API_KEY is missing.');
     }
 
-    let targetDurationSec = 55;
-    let shotCount = 10;
-    if (duration && duration.includes('30-40')) { targetDurationSec = 35; shotCount = 6; }
-    else if (duration && duration.includes('15-20')) { targetDurationSec = 18; shotCount = 3; }
+    const { targetDurationSec, shotCount, shotDuration } = parseDurationSettings(duration);
 
     const systemPrompt = `You are an expert short-form viral scriptwriter for TikTok, Reels, and YouTube Shorts.
-Create a high-retention cinematic script and shot list totaling exactly ${shotCount} shots, with each shot taking about 5 to 6 seconds (total ~${targetDurationSec} seconds).
+Create a high-retention cinematic script and shot list totaling EXACTLY ${shotCount} shots. Each shot must have a durationSeconds of ${shotDuration}.
 Return ONLY valid JSON with no markdown formatting or backticks.
 Structure:
 {
@@ -197,8 +264,8 @@ Structure:
       "shotNumber": 1,
       "narration": "First sentence spoken in voiceover...",
       "visualPrompt": "Detailed cinematic visual description...",
-      "searchKeywords": "electric bike",
-      "durationSeconds": 6
+      "searchKeywords": "cinematic action",
+      "durationSeconds": ${shotDuration}
     }
   ]
 }`;
@@ -206,7 +273,7 @@ Structure:
     const userPrompt = `Series Name: ${seriesName || 'Viral Story'}
 Niche: ${niche || 'Fun Facts & Curiosities'}
 Tone: ${tone || 'Energetic & Fast-Paced'}
-Target Duration: ${duration || '50-60 seconds (Long Reel)'}
+Target Duration: ${duration || '50-60 seconds'} (~${targetDurationSec} seconds total, exactly ${shotCount} shots)
 Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful hook.'}`;
 
     const scriptAiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -228,10 +295,32 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
 
     const scriptAiData = await scriptAiRes.json();
     const rawContent = scriptAiData.choices?.[0]?.message?.content || '{}';
-    const parsedScript = extractAndParseJSON(rawContent, niche, seriesName);
+    const parsedScript = extractAndParseJSON(rawContent, niche, seriesName, shotCount, shotDuration);
 
-    const script = parsedScript.script || 'Viral narration story.';
-    const shots: Shot[] = parsedScript.shots || [];
+    let script = parsedScript.script || 'Viral narration story.';
+    let shots: Shot[] = parsedScript.shots || [];
+
+    // Smart Shot-Padding Engine: guarantee exact shot count and duration
+    if (shots.length < shotCount) {
+      const templateShots = [...shots];
+      while (shots.length < shotCount) {
+        const source = templateShots[shots.length % templateShots.length];
+        shots.push({
+          ...source,
+          shotNumber: shots.length + 1,
+          durationSeconds: shotDuration
+        });
+      }
+    } else if (shots.length > shotCount) {
+      shots = shots.slice(0, shotCount);
+    }
+
+    shots = shots.map((s, idx) => ({
+      ...s,
+      shotNumber: idx + 1,
+      durationSeconds: shotDuration
+    }));
+
     if (shots.length === 0) throw new Error('AI failed to generate valid shot list.');
 
     // 1. Generate Voiceover Audio via Edge TTS
@@ -301,7 +390,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
         ...shot,
         videoUrl: videoUrl || null,
         imageUrl: imageUrl || null,
-        durationSeconds: shot.durationSeconds || 6
+        durationSeconds: shot.durationSeconds || shotDuration
       });
     }
 
@@ -313,7 +402,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
 
     const clipPromises = processedShots.map(async (shot: Shot, i: number) => {
       const mediaUrl = shot.videoUrl || shot.imageUrl;
-      const clipDuration = shot.durationSeconds || 6;
+      const clipDuration = shot.durationSeconds || shotDuration;
       const isVideo = Boolean(shot.videoUrl);
       const clipFilename = `clip_${i}.${isVideo ? 'mp4' : 'jpg'}`;
       const normFilename = `norm_${i}.mp4`;
@@ -377,7 +466,7 @@ Custom Topic: ${customPrompt || 'Create a compelling narrative with a powerful h
     } else if (fs.existsSync(audioPath)) {
       ffmpegCmd += ` -i "${audioFilename}" -vf "ass=${subtitleFilename}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast -c:a aac -b:a 128k -shortest "${outputFileName}"`;
     } else {
-      ffmpegCmd += ` -vf "ass=${subtitleFilename}" -c:v libx264 -crf 26 -b:v 2M -preset veryfast "${outputFileName}"`;
+      ffmpegCmd += ` -vf "ass=${subtitleFilename}" -c:v libx264 -preset veryfast "${outputFileName}"`;
     }
 
     await execPromise(ffmpegCmd, { cwd: tmpDir });
