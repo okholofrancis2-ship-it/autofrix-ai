@@ -1,70 +1,92 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+export const runtime = 'nodejs';
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const code = searchParams.get('code');
-  const error = searchParams.get('error');
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key';
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-  if (error || !code) {
-    return NextResponse.redirect('http://localhost:3000/dashboard?error=facebook_auth_failed');
-  }
-
-  const clientId = process.env.FACEBOOK_CLIENT_ID!;
-  const clientSecret = process.env.FACEBOOK_CLIENT_SECRET!;
-  const redirectUri = 'http://localhost:3000/api/auth/callback/facebook';
-
+export async function GET(req: Request) {
   try {
-    // 1. Exchange auth code for short-lived User Access Token
-    const tokenUrl = `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${clientId}&redirect_uri=${encodeURIComponent(
-      redirectUri
-    )}&client_secret=${clientSecret}&code=${code}`;
+    const url = new URL(req.url);
+    const code = url.searchParams.get('code');
+    const stateUserId = url.searchParams.get('state'); // Passed as user_id in OAuth flow
 
-    const tokenRes = await fetch(tokenUrl);
+    if (!code) {
+      return NextResponse.redirect(new URL('/?error=NoCodeProvided', req.url));
+    }
+
+    const clientId = process.env.FACEBOOK_CLIENT_ID || '';
+    const clientSecret = process.env.FACEBOOK_CLIENT_SECRET || '';
+    const redirectUri = `${new URL(req.url).origin}/api/auth/callback/facebook`;
+
+    // 1. Exchange code for Facebook Access Token
+    const tokenRes = await fetch(
+      `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${clientSecret}&code=${code}`
+    );
     const tokenData = await tokenRes.json();
 
-    if (tokenData.error) throw new Error(tokenData.error.message);
+    if (!tokenData.access_token) {
+      throw new Error('Failed to exchange Facebook code for access token.');
+    }
 
-    const shortLivedToken = tokenData.access_token;
+    const accessToken = tokenData.access_token;
 
-    // 2. Exchange for Long-Lived User Token (valid for ~60 days)
-    const longLivedUrl = `https://graph.facebook.com/v20.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${clientId}&client_secret=${clientSecret}&fb_exchange_token=${shortLivedToken}`;
+    // 2. Fetch User Pages & Instagram Accounts
+    const accountsRes = await fetch(`https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}`);
+    const accountsData = await accountsRes.json();
 
-    const llRes = await fetch(longLivedUrl);
-    const llData = await llRes.json();
-    const longLivedToken = llData.access_token || shortLivedToken;
+    let pageId = '';
+    let pageName = 'Facebook Page';
+    let pageAccessToken = accessToken;
+    let instagramAccountId = '';
 
-    // 3. Fetch user's managed Facebook Pages and Page Access Tokens
-    const pagesRes = await fetch(
-      `https://graph.facebook.com/v20.0/me/accounts?access_token=${longLivedToken}`
-    );
-    const pagesData = await pagesRes.json();
+    if (accountsData.data && accountsData.data.length > 0) {
+      const page = accountsData.data[0];
+      pageId = page.id;
+      pageName = page.name;
+      pageAccessToken = page.access_token || accessToken;
 
-    if (pagesData.data && pagesData.data.length > 0) {
-      // Loop over managed pages and store connections in Supabase
-      for (const page of pagesData.data) {
-        await supabase.from('social_connections').upsert(
-          {
-            platform: 'facebook',
-            account_id: page.id,
-            account_name: page.name,
-            access_token: page.access_token, // Page-level token
-            user_access_token: longLivedToken,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'platform,account_id' }
-        );
+      // Check for connected Instagram Business Account
+      try {
+        const igRes = await fetch(`https://graph.facebook.com/v18.0/${pageId}?fields=instagram_business_account&access_token=${pageAccessToken}`);
+        const igData = await igRes.json();
+        if (igData.instagram_business_account) {
+          instagramAccountId = igData.instagram_business_account.id;
+        }
+      } catch (e) {
+        console.error('Failed to fetch IG account:', e);
       }
     }
 
-    return NextResponse.redirect('http://localhost:3000/dashboard?success=facebook_connected');
+    // 3. Save to Supabase `social_connections` table
+    if (stateUserId) {
+      await supabase.from('social_connections').upsert([
+        {
+          user_id: stateUserId,
+          platform: 'facebook',
+          account_name: pageName,
+          access_token: pageAccessToken,
+          page_id: pageId,
+          instagram_account_id: instagramAccountId,
+          updated_at: new Date().toISOString()
+        },
+        ...(instagramAccountId ? [{
+          user_id: stateUserId,
+          platform: 'instagram',
+          account_name: `${pageName} (Instagram)`,
+          access_token: pageAccessToken,
+          page_id: pageId,
+          instagram_account_id: instagramAccountId,
+          updated_at: new Date().toISOString()
+        }] : [])
+      ], { onConflict: 'user_id,platform' });
+    }
+
+    return NextResponse.redirect(new URL('/?success=SocialConnected', req.url));
   } catch (err: any) {
-    console.error('Facebook Auth Callback Error:', err.message);
-    return NextResponse.redirect('http://localhost:3000/dashboard?error=facebook_token_error');
+    console.error('Facebook OAuth Error:', err);
+    return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(err.message)}`, req.url));
   }
 }
